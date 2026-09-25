@@ -22,7 +22,7 @@ SESSION_NAME     = "telegram_content_collector"
 API_ID           = os.getenv("TELEGRAM_API_ID")
 API_HASH         = os.getenv("TELEGRAM_API_HASH")
 TELEGRAM_SESSION = os.getenv("TELEGRAM_SESSION")   # StringSession for Render
-GROUP_ID_ENV     = os.getenv("TELEGRAM_GROUP_ID")  # pre-set group ID for Render
+GROUP_ID_ENV     = os.getenv("TELEGRAM_GROUP_ID", "-1001574277898")  # Colorwiz VIP
 
 IST          = timezone(timedelta(hours=5, minutes=30))
 TARGET_TYPES = {"PARITY", "SAPRE", "BCONE", "EMERD"}
