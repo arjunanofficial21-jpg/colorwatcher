@@ -792,6 +792,148 @@ function BetTablePage({ allChains }) {
   )
 }
 
+// ─── PAGE 3: Heatmap (729x+ by month × hour) ─────────────────────────────────
+
+const MONTH_NAMES = ['January','February','March','April','May','June',
+                     'July','August','September','October','November','December']
+const HEATMAP_HOURS = [7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+
+function heatBg(count, max) {
+  if (!count) return ''
+  const r = count / max
+  if (r >= 0.75) return 'bg-red-600 text-white'
+  if (r >= 0.50) return 'bg-red-400 text-white'
+  if (r >= 0.25) return 'bg-orange-300 text-orange-900'
+  return 'bg-yellow-100 text-yellow-800'
+}
+
+function HeatmapPage({ allChains }) {
+  const [minLevel, setMinLevel] = useState('729x')  // '243x' | '729x' | 'no_limit'
+
+  const threshold = minLevel === '243x' ? 24300 : minLevel === '729x' ? 72900 : 72901
+
+  const { monthKeys, matrix, hourTotals, monthTotals, grandTotal, maxCell } = useMemo(() => {
+    const crossed = allChains.filter(c => Math.max(...c.map(e => e.amount)) >= threshold)
+
+    const matrix     = {}   // key → { year, monthIdx, label, counts:{hour:n} }
+    const hourTotals = {}
+    let grandTotal   = 0
+
+    for (const chain of crossed) {
+      const d        = new Date(chain[0].date + 'T00:00:00')
+      const year     = d.getFullYear()
+      const mIdx     = d.getMonth()
+      const hour     = parseInt(chain[0].time.slice(0, 2), 10)
+      const key      = `${year}-${String(mIdx).padStart(2,'0')}`
+
+      if (!matrix[key]) matrix[key] = { year, mIdx, label: `${MONTH_NAMES[mIdx]} ${year}`, counts: {} }
+      matrix[key].counts[hour] = (matrix[key].counts[hour] || 0) + 1
+      hourTotals[hour]         = (hourTotals[hour] || 0) + 1
+      grandTotal++
+    }
+
+    const monthKeys   = Object.keys(matrix).sort()
+    const monthTotals = {}
+    monthKeys.forEach(k => {
+      monthTotals[k] = Object.values(matrix[k].counts).reduce((s, v) => s + v, 0)
+    })
+    const maxCell = Math.max(1, ...Object.values(matrix).flatMap(m => Object.values(m.counts)))
+
+    return { monthKeys, matrix, hourTotals, monthTotals, grandTotal, maxCell }
+  }, [allChains, threshold])
+
+  const hlHour = (h) => {
+    const ampm = h >= 12 ? 'PM' : 'AM'
+    const h12  = h === 0 ? 12 : h > 12 ? h - 12 : h
+    return `${h12} ${ampm}`
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-3 flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <p className="text-sm font-semibold text-gray-700">Session Heatmap — Month × Hour</p>
+          <p className="text-xs text-gray-400 mt-0.5">{grandTotal} sessions reached the selected level or beyond</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-400 font-medium">Show level:</span>
+          {[
+            { value: '243x',     label: '243x+' },
+            { value: '729x',     label: '729x+' },
+            { value: 'no_limit', label: 'No Limit only' },
+          ].map(opt => (
+            <button key={opt.value}
+              onClick={() => setMinLevel(opt.value)}
+              className={`text-xs px-3 py-1 rounded-full border font-semibold transition-colors
+                ${minLevel === opt.value
+                  ? 'bg-rose-600 text-white border-rose-600'
+                  : 'bg-white text-gray-600 border-gray-200 hover:border-rose-400'}`}>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-slate-700 text-white">
+                <th className="px-4 py-3 text-left font-semibold whitespace-nowrap sticky left-0 bg-slate-700 z-10">Month</th>
+                {HEATMAP_HOURS.map(h => (
+                  <th key={h} className="px-2 py-3 text-center font-semibold whitespace-nowrap min-w-[52px]">{hlHour(h)}</th>
+                ))}
+                <th className="px-4 py-3 text-center font-semibold">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {monthKeys.map((key, i) => {
+                const { label, counts } = matrix[key]
+                return (
+                  <tr key={key} className={`border-t border-gray-100 ${i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                    <td className="px-4 py-2.5 font-medium text-gray-700 whitespace-nowrap sticky left-0 bg-inherit z-10">{label}</td>
+                    {HEATMAP_HOURS.map(h => (
+                      <td key={h} className="px-2 py-2 text-center">
+                        {counts[h]
+                          ? <span className={`inline-flex items-center justify-center w-8 h-8 rounded-full font-bold ${heatBg(counts[h], maxCell)}`}>
+                              {counts[h]}
+                            </span>
+                          : <span className="text-gray-200">·</span>}
+                      </td>
+                    ))}
+                    <td className="px-4 py-2.5 text-center font-bold text-rose-600">{monthTotals[key]}</td>
+                  </tr>
+                )
+              })}
+              <tr className="border-t-2 border-slate-300 bg-slate-100 font-bold">
+                <td className="px-4 py-2.5 text-gray-700 sticky left-0 bg-slate-100 z-10">Total</td>
+                {HEATMAP_HOURS.map(h => (
+                  <td key={h} className="px-2 py-2.5 text-center text-rose-600 font-bold">
+                    {hourTotals[h] || <span className="text-gray-300 font-normal">·</span>}
+                  </td>
+                ))}
+                <td className="px-4 py-2.5 text-center text-rose-700 font-bold">{grandTotal}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 px-1">
+        <span className="text-xs text-gray-400">Heat scale:</span>
+        {[
+          { cls: 'bg-yellow-100 text-yellow-800', label: 'Low' },
+          { cls: 'bg-orange-300 text-orange-900', label: 'Med' },
+          { cls: 'bg-red-400 text-white',         label: 'High' },
+          { cls: 'bg-red-600 text-white',         label: 'Peak' },
+        ].map(({ cls, label }) => (
+          <span key={label} className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${cls}`}>{label}</span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ─── Data loader (shared across routes) ──────────────────────────────────────
 
 function useData() {
@@ -866,6 +1008,7 @@ function Layout({ data, lastFetched, children }) {
             <div className="flex gap-1 bg-gray-100 p-1 rounded-lg">
               <NavLink to="/table"    className={navCls}>Bet Table</NavLink>
               <NavLink to="/timeline" className={navCls}>Timeline</NavLink>
+              <NavLink to="/heatmap"  className={navCls}>Heatmap</NavLink>
             </div>
           </div>
           <div className="flex gap-2 mt-2">
@@ -910,6 +1053,7 @@ export default function App() {
           <Route path="/"         element={<Navigate to="/table" replace />} />
           <Route path="/table"    element={<BetTablePage allChains={all} />} />
           <Route path="/timeline" element={<TimelinePage dates={dates} allChains={all} />} />
+          <Route path="/heatmap"  element={<HeatmapPage allChains={all} />} />
         </Routes>
       </Layout>
     </BrowserRouter>
