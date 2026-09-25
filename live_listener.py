@@ -158,6 +158,14 @@ class APIHandler(BaseHTTPRequestHandler):
             self._cors_headers()
             self.end_headers()
             self.wfile.write(body)
+        elif self.path.rstrip("/") == "/health":
+            body = json.dumps({"status": "ok", "live": _state["live"]}, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self._cors_headers()
+            self.end_headers()
+            self.wfile.write(body)
         else:
             self.send_response(404)
             self.end_headers()
