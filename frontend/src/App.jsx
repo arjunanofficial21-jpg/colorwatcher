@@ -101,10 +101,11 @@ function outcomeLabel(chain) {
   return '—'
 }
 
-function hitsSkipTrigger(maxAmt, trigger) {
-  if (trigger === '243x')     return maxAmt >= 24300
-  if (trigger === '729x')     return maxAmt >= 72900
-  if (trigger === 'no_limit') return maxAmt > 72900
+function rowHitsAnyTrigger(outcome, triggers) {
+  if (triggers.size === 0) return false
+  if (triggers.has('243x')     && outcome === '243x')     return true
+  if (triggers.has('729x')     && outcome === '729x')     return true
+  if (triggers.has('no_limit') && outcome === 'no limit') return true
   return false
 }
 
@@ -335,8 +336,14 @@ function BetTablePage({ allChains }) {
   const [stakes, setStakes]               = useState(DEFAULT_STAKES)
   const [timeFrom, setTimeFrom]           = useState({ h: '', ampm: 'AM' })
   const [timeTo, setTimeTo]               = useState({ h: '', ampm: 'PM' })
-  const [skipTrigger, setSkipTrigger]     = useState('off')   // 'off' | '243x' | '729x' | 'no_limit'
+  const [skipTriggers, setSkipTriggers]   = useState(new Set())  // empty = off
   const [skipCount, setSkipCount]         = useState(2)
+
+  const toggleSkipTrigger = (t) => setSkipTriggers(prev => {
+    const next = new Set(prev)
+    if (next.has(t)) next.delete(t); else next.add(t)
+    return next
+  })
 
   const updateStake = (label, val) => {
     const n = parseInt(val, 10)
@@ -376,7 +383,7 @@ function BetTablePage({ allChains }) {
         skipRemaining--
         return { ...row, skipped: true }
       }
-      if (skipTrigger !== 'off' && hitsSkipTrigger(row.maxAmt, skipTrigger)) {
+      if (rowHitsAnyTrigger(row.outcome, skipTriggers)) {
         skipRemaining = skipCount
       }
       return { ...row, skipped: false }
@@ -393,7 +400,7 @@ function BetTablePage({ allChains }) {
       if (!row.skipped) balance += (row.pnl ?? 0)
       return { ...row, balance }
     })
-  }, [allChains, stakes, timeFrom, timeTo, skipTrigger, skipCount])
+  }, [allChains, stakes, timeFrom, timeTo, skipTriggers, skipCount])
 
   const count729 = useMemo(() => allRows.filter(r => r.maxAmt >= 72900).length, [allRows])
 
@@ -559,35 +566,41 @@ function BetTablePage({ allChains }) {
         <div className="w-full border-t border-gray-100 pt-3 flex items-center gap-3 flex-wrap">
           <span className="text-xs text-gray-400 font-medium">Skip sessions after:</span>
           {[
-            { value: 'off',      label: 'Off' },
             { value: '243x',     label: '243x' },
             { value: '729x',     label: '729x' },
             { value: 'no_limit', label: 'No Limit' },
           ].map(opt => (
             <button key={opt.value}
-              onClick={() => setSkipTrigger(opt.value)}
-              className={`text-xs px-3 py-1 rounded-full border transition-colors
-                ${skipTrigger === opt.value
+              onClick={() => toggleSkipTrigger(opt.value)}
+              className={`text-xs px-3 py-1 rounded-full border font-semibold transition-colors
+                ${skipTriggers.has(opt.value)
                   ? 'bg-amber-500 text-white border-amber-500'
                   : 'bg-white text-gray-600 border-gray-200 hover:border-amber-400'}`}>
               {opt.label}
             </button>
           ))}
-          {skipTrigger !== 'off' && (
-            <div className="flex items-center gap-2 ml-1">
-              <span className="text-xs text-gray-400">skip next</span>
-              {[2, 3, 4, 5].map(n => (
-                <button key={n}
-                  onClick={() => setSkipCount(n)}
-                  className={`text-xs w-7 h-7 rounded-full border font-bold transition-colors
-                    ${skipCount === n
-                      ? 'bg-amber-500 text-white border-amber-500'
-                      : 'bg-white text-gray-600 border-gray-200 hover:border-amber-400'}`}>
-                  {n}
-                </button>
-              ))}
-              <span className="text-xs text-gray-400">sessions</span>
-            </div>
+          {skipTriggers.size > 0 && (
+            <>
+              <div className="flex items-center gap-2 ml-1">
+                <span className="text-xs text-gray-400">skip next</span>
+                {[2, 3, 4, 5].map(n => (
+                  <button key={n}
+                    onClick={() => setSkipCount(n)}
+                    className={`text-xs w-7 h-7 rounded-full border font-bold transition-colors
+                      ${skipCount === n
+                        ? 'bg-amber-500 text-white border-amber-500'
+                        : 'bg-white text-gray-600 border-gray-200 hover:border-amber-400'}`}>
+                    {n}
+                  </button>
+                ))}
+                <span className="text-xs text-gray-400">sessions</span>
+              </div>
+              <button
+                onClick={() => setSkipTriggers(new Set())}
+                className="text-xs text-gray-400 hover:text-gray-600 underline ml-1">
+                clear
+              </button>
+            </>
           )}
         </div>
       </div>
