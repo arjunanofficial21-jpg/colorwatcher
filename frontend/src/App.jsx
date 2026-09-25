@@ -809,11 +809,15 @@ function heatBg(count, max) {
 
 function HeatmapPage({ allChains }) {
   const [minLevel, setMinLevel] = useState('729x')  // '243x' | '729x' | 'no_limit'
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo,   setDateTo]   = useState('')
 
   const threshold = minLevel === '243x' ? 24300 : minLevel === '729x' ? 72900 : 72901
 
   const { monthKeys, matrix, hourTotals, monthTotals, grandTotal, maxCell } = useMemo(() => {
-    const crossed = allChains.filter(c => Math.max(...c.map(e => e.amount)) >= threshold)
+    const crossed = allChains
+      .filter(c => Math.max(...c.map(e => e.amount)) >= threshold)
+      .filter(c => (!dateFrom || c[0].date >= dateFrom) && (!dateTo || c[0].date <= dateTo))
 
     const matrix     = {}   // key → { year, monthIdx, label, counts:{hour:n} }
     const hourTotals = {}
@@ -840,7 +844,7 @@ function HeatmapPage({ allChains }) {
     const maxCell = Math.max(1, ...Object.values(matrix).flatMap(m => Object.values(m.counts)))
 
     return { monthKeys, matrix, hourTotals, monthTotals, grandTotal, maxCell }
-  }, [allChains, threshold])
+  }, [allChains, threshold, dateFrom, dateTo])
 
   const hlHour = (h) => {
     const ampm = h >= 12 ? 'PM' : 'AM'
@@ -855,22 +859,36 @@ function HeatmapPage({ allChains }) {
           <p className="text-sm font-semibold text-gray-700">Session Heatmap — Month × Hour</p>
           <p className="text-xs text-gray-400 mt-0.5">{grandTotal} sessions reached the selected level or beyond</p>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400 font-medium">Show level:</span>
-          {[
-            { value: '243x',     label: '243x+' },
-            { value: '729x',     label: '729x+' },
-            { value: 'no_limit', label: 'No Limit only' },
-          ].map(opt => (
-            <button key={opt.value}
-              onClick={() => setMinLevel(opt.value)}
-              className={`text-xs px-3 py-1 rounded-full border font-semibold transition-colors
-                ${minLevel === opt.value
-                  ? 'bg-rose-600 text-white border-rose-600'
-                  : 'bg-white text-gray-600 border-gray-200 hover:border-rose-400'}`}>
-              {opt.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-400 font-medium">Level:</span>
+            {[
+              { value: '243x',     label: '243x+' },
+              { value: '729x',     label: '729x+' },
+              { value: 'no_limit', label: 'No Limit' },
+            ].map(opt => (
+              <button key={opt.value}
+                onClick={() => setMinLevel(opt.value)}
+                className={`text-xs px-3 py-1 rounded-full border font-semibold transition-colors
+                  ${minLevel === opt.value
+                    ? 'bg-rose-600 text-white border-rose-600'
+                    : 'bg-white text-gray-600 border-gray-200 hover:border-rose-400'}`}>
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-400 font-medium">From:</span>
+            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+              className="text-xs border border-gray-200 rounded-lg px-2 py-1 outline-none focus:border-rose-400" />
+            <span className="text-xs text-gray-400">To:</span>
+            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+              className="text-xs border border-gray-200 rounded-lg px-2 py-1 outline-none focus:border-rose-400" />
+            {(dateFrom || dateTo) && (
+              <button onClick={() => { setDateFrom(''); setDateTo('') }}
+                className="text-xs text-gray-400 hover:text-gray-600 underline">clear</button>
+            )}
+          </div>
         </div>
       </div>
 
