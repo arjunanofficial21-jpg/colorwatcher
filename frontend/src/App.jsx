@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom'
 
-const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/data'
+const API_URL = (import.meta.env.VITE_API_URL || 'https://colorwatcher.onrender.com') + '/data'
 const POLL_INTERVAL = 30000  // 30 seconds
 
 const STARTING_BALANCE = 6000
