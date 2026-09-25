@@ -196,6 +196,9 @@ async def choose_group(client):
     # On Render: use env var directly, no interactive prompt
     if GROUP_ID_ENV:
         group_id = int(GROUP_ID_ENV)
+        # Normalize: bare positive IDs are channel/supergroup IDs — add -100 prefix
+        if group_id > 0:
+            group_id = int(f"-100{group_id}")
         try:
             entity = await client.get_entity(group_id)
             name = getattr(entity, "title", None) or getattr(entity, "first_name", str(group_id))
