@@ -101,6 +101,13 @@ function outcomeLabel(chain) {
   return '—'
 }
 
+function hitsSkipTrigger(maxAmt, trigger) {
+  if (trigger === '243x')     return maxAmt >= 24300
+  if (trigger === '729x')     return maxAmt >= 72900
+  if (trigger === 'no_limit') return maxAmt > 72900
+  return false
+}
+
 // ─── valid game amounts ───────────────────────────────────────────────────────
 // Valid amounts follow the 3x sequence: 100, 300, 900, 2700, 8100, 24300, 72900, ...
 // Anything else (e.g. 500000, 1000000, 2430072900) is garbage data to be ignored.
@@ -328,6 +335,8 @@ function BetTablePage({ allChains }) {
   const [stakes, setStakes]               = useState(DEFAULT_STAKES)
   const [timeFrom, setTimeFrom]           = useState({ h: '', ampm: 'AM' })
   const [timeTo, setTimeTo]               = useState({ h: '', ampm: 'PM' })
+  const [skipTrigger, setSkipTrigger]     = useState('off')   // 'off' | '243x' | '729x' | 'no_limit'
+  const [skipCount, setSkipCount]         = useState(2)
 
   const updateStake = (label, val) => {
     const n = parseInt(val, 10)
@@ -347,10 +356,8 @@ function BetTablePage({ allChains }) {
       return true
     }
 
-    let balance  = STARTING_BALANCE
-    let curMonth = null
-
-    return allChains
+    // Pass 1: build raw rows (pnl only, no balance yet)
+    const raw = allChains
       .filter(c => Math.max(...c.map(e => e.amount)) >= 900)
       .filter(c => inTimeRange(c[0].time))
       .map(chain => {
@@ -358,22 +365,35 @@ function BetTablePage({ allChains }) {
         const maxAmt   = Math.max(...chain.map(e => e.amount))
         const rowMonth = chain[0].date.slice(0, 7)
         const label    = outcomeLabel(chain)
-
-        if (rowMonth !== curMonth) {
-          balance  = STARTING_BALANCE
-          curMonth = rowMonth
-        }
-
-        const pnl = chainPnL(chain, stakes)
-        balance += (pnl ?? 0)
-
-        return {
-          date: chain[0].date, time: chain[0].time,
-          type, outcome: label, maxAmt,
-          pnl, balance, month: rowMonth,
-        }
+        const pnl      = chainPnL(chain, stakes)
+        return { date: chain[0].date, time: chain[0].time, type, outcome: label, maxAmt, pnl, month: rowMonth }
       })
-  }, [allChains, stakes, timeFrom, timeTo])
+
+    // Pass 2: mark skipped rows
+    let skipRemaining = 0
+    const withSkip = raw.map(row => {
+      if (skipRemaining > 0) {
+        skipRemaining--
+        return { ...row, skipped: true }
+      }
+      if (skipTrigger !== 'off' && hitsSkipTrigger(row.maxAmt, skipTrigger)) {
+        skipRemaining = skipCount
+      }
+      return { ...row, skipped: false }
+    })
+
+    // Pass 3: compute running balance (skipped rows don't affect bankroll)
+    let balance  = STARTING_BALANCE
+    let curMonth = null
+    return withSkip.map(row => {
+      if (row.month !== curMonth) {
+        balance  = STARTING_BALANCE
+        curMonth = row.month
+      }
+      if (!row.skipped) balance += (row.pnl ?? 0)
+      return { ...row, balance }
+    })
+  }, [allChains, stakes, timeFrom, timeTo, skipTrigger, skipCount])
 
   const count729 = useMemo(() => allRows.filter(r => r.maxAmt >= 72900).length, [allRows])
 
@@ -399,7 +419,7 @@ function BetTablePage({ allChains }) {
     return d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })
   }
 
-  const totalPnL = rows.reduce((s, r) => s + (r.pnl ?? 0), 0)
+  const totalPnL = rows.filter(r => !r.skipped).reduce((s, r) => s + (r.pnl ?? 0), 0)
 
   // Per-month breakdown (used for both single-month card and all-months summary)
   const perMonthStats = useMemo(() => {
@@ -535,6 +555,41 @@ function BetTablePage({ allChains }) {
             </button>
           )}
         </div>
+
+        <div className="w-full border-t border-gray-100 pt-3 flex items-center gap-3 flex-wrap">
+          <span className="text-xs text-gray-400 font-medium">Skip sessions after:</span>
+          {[
+            { value: 'off',      label: 'Off' },
+            { value: '243x',     label: '243x' },
+            { value: '729x',     label: '729x' },
+            { value: 'no_limit', label: 'No Limit' },
+          ].map(opt => (
+            <button key={opt.value}
+              onClick={() => setSkipTrigger(opt.value)}
+              className={`text-xs px-3 py-1 rounded-full border transition-colors
+                ${skipTrigger === opt.value
+                  ? 'bg-amber-500 text-white border-amber-500'
+                  : 'bg-white text-gray-600 border-gray-200 hover:border-amber-400'}`}>
+              {opt.label}
+            </button>
+          ))}
+          {skipTrigger !== 'off' && (
+            <div className="flex items-center gap-2 ml-1">
+              <span className="text-xs text-gray-400">skip next</span>
+              {[2, 3, 4, 5].map(n => (
+                <button key={n}
+                  onClick={() => setSkipCount(n)}
+                  className={`text-xs w-7 h-7 rounded-full border font-bold transition-colors
+                    ${skipCount === n
+                      ? 'bg-amber-500 text-white border-amber-500'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-amber-400'}`}>
+                  {n}
+                </button>
+              ))}
+              <span className="text-xs text-gray-400">sessions</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* all months summary card */}
@@ -654,6 +709,31 @@ function BetTablePage({ allChains }) {
               {rows.map((row, i) => {
                 const highlight = row.maxAmt >= 72900
                 const is243     = row.outcome === '243x'
+                if (row.skipped) return (
+                  <tr key={i} className="border-t border-gray-100 opacity-40 bg-gray-50">
+                    <td className="px-4 py-2.5 font-medium text-xs whitespace-nowrap text-gray-400">
+                      {formatDateShort(row.date)}
+                    </td>
+                    <td className="px-4 py-2.5 text-xs whitespace-nowrap text-gray-400">
+                      {to12h(row.time)}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <TypeTag type={row.type} />
+                    </td>
+                    <td className="px-4 py-2.5 text-xs font-semibold text-gray-400">
+                      {row.outcome}
+                    </td>
+                    {BET_LEVELS.map(lvl => (
+                      <td key={lvl.label} className="px-4 py-2.5 text-xs text-right text-gray-300">—</td>
+                    ))}
+                    <td className="px-4 py-2.5 text-xs text-right">
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-gray-200 text-gray-500 uppercase tracking-wide">SKIP</span>
+                    </td>
+                    <td className="px-4 py-2.5 text-xs text-right text-gray-400 font-bold">
+                      ₹{row.balance.toLocaleString()}
+                    </td>
+                  </tr>
+                )
                 return (
                   <tr key={i}
                     className={`border-t border-gray-100 transition-colors
