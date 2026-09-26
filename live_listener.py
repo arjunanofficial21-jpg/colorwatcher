@@ -149,17 +149,32 @@ class APIHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path.rstrip("/") in ("", "/data"):
-            with _lock:
-                body = json.dumps(_state, default=str, ensure_ascii=False).encode("utf-8")
+        user_agent = self.headers.get("User-Agent", "").lower()
+        path_clean = self.path.split("?")[0].rstrip("/").lower()
+        query_str  = self.path.split("?")[1].lower() if "?" in self.path else ""
+
+        # Check if request comes from cron-job.org or is a keep-alive/health check request
+        is_cron = (
+            "cron-job.org" in user_agent or
+            "cron" in query_str or
+            "keepalive" in query_str or
+            "ping" in query_str or
+            path_clean in ("/health", "/ping", "/keepalive", "/keep-alive")
+        )
+
+        if is_cron:
+            body = json.dumps({"status": "ok", "live": _state["live"]}, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self._cors_headers()
             self.end_headers()
             self.wfile.write(body)
-        elif self.path.rstrip("/") == "/health":
-            body = json.dumps({"status": "ok", "live": _state["live"]}, ensure_ascii=False).encode("utf-8")
+            return
+
+        if path_clean in ("", "/data"):
+            with _lock:
+                body = json.dumps(_state, default=str, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
