@@ -53,51 +53,61 @@ function formatDateShort(dateStr) {
 // ─── bet levels ──────────────────────────────────────────────────────────────
 // Each level: game amount, label, stake key
 const BET_LEVELS = [
-  { amount: 900,   label: '9x'   },
-  { amount: 2700,  label: '27x'  },
-  { amount: 8100,  label: '81x'  },
-  { amount: 24300, label: '243x' },
-  { amount: 72900, label: '729x' },
+  { amount: 900,    label: '9x'    },
+  { amount: 2700,   label: '27x'   },
+  { amount: 8100,   label: '81x'   },
+  { amount: 24300,  label: '243x'  },
+  { amount: 72900,  label: '729x'  },
+  { amount: 218700, label: '2187x' },
+  { amount: 656100, label: '6561x' },
 ]
 
-const DEFAULT_STAKES = { '9x': 50, '27x': 150, '81x': 450, '243x': 1000, '729x': 0 }
+const DEFAULT_STAKES = {}
+const DEFAULT_MONTH_INVEST = 50000
+
+// ─── all game levels (for simulator) ─────────────────────────────────────────
+const ALL_GAME_LEVELS = [100, 300, 900, 2700, 8100, 24300, 72900, 218700, 656100, 1968300, 5904900, 17714700]
 
 // ─── P&L (stakes-aware) ───────────────────────────────────────────────────────
-// P&L = stake at winning level - sum of stakes at all lower levels that were in chain
-// Stop loss (729x) = -(sum of all stakes)
+// Walks actual chain entries so non-3x amounts above 72900 are handled correctly.
+// Each entry before the last = LOSS. Last entry = WIN.
+// For amounts not in BET_LEVELS (non-3x above 72900), uses 'above729x' catch-all stake.
+
+function stakeForAmount(amt, stakes) {
+  if (amt < 900) return 0
+  const lvl = BET_LEVELS.find(l => l.amount === amt)
+  return lvl ? (stakes[lvl.label] || 0) : (stakes['above729x'] || 0)
+}
 
 function chainPnL(chain, stakes = DEFAULT_STAKES) {
-  const winAmt = chain[chain.length - 1].amount
   const maxAmt = Math.max(...chain.map(e => e.amount))
-
   if (maxAmt < 900) return null  // no bet placed
 
-  // went above 729x (no limit) — all 5 levels lost
-  if (maxAmt > 72900) {
-    return -(BET_LEVELS.reduce((s, l) => s + (stakes[l.label] || 0), 0))
+  // sum all losses (every entry except last, if amount >= 900)
+  let totalLost = 0
+  for (let i = 0; i < chain.length - 1; i++) {
+    if (chain[i].amount >= 900) totalLost += stakeForAmount(chain[i].amount, stakes)
   }
 
-  // walk each bet level; 729x included so win/loss at that level is calculated
-  let lostSoFar = 0
-  for (const lvl of BET_LEVELS) {
-    if (maxAmt < lvl.amount) break
-    if (winAmt === lvl.amount) {
-      return (stakes[lvl.label] || 0) - lostSoFar
-    }
-    lostSoFar += (stakes[lvl.label] || 0)
-  }
-  return null
+  // last entry is the WIN
+  const winAmt = chain[chain.length - 1].amount
+  if (winAmt < 900) return null
+  const winStake = stakeForAmount(winAmt, stakes)
+
+  return winStake - totalLost
 }
 
 function outcomeLabel(chain) {
   const winAmt = chain[chain.length - 1].amount
   const maxAmt = Math.max(...chain.map(e => e.amount))
-  if (maxAmt > 72900)   return 'no limit'
-  if (maxAmt === 72900) return '729x'
-  if (winAmt === 24300) return '243x'
-  if (winAmt === 8100)  return '81x'
-  if (winAmt === 2700)  return '27x'
-  if (winAmt === 900)   return '9x'
+  if (maxAmt > 72900) {
+    // exact match to a known above-72900 level → use that label
+    const knownLvl = BET_LEVELS.find(l => l.amount === winAmt && l.amount > 72900)
+    return knownLvl ? knownLvl.label : 'no limit'
+  }
+  for (const lvl of BET_LEVELS) {
+    if (winAmt === lvl.amount) return lvl.label
+  }
   return '—'
 }
 
@@ -223,6 +233,13 @@ function ChainChip({ chain }) {
   const at8100  = maxAmt === 8100
   const pnl     = chainPnL(chain)
 
+  // Only show entries from 900+ (100/300 are parity validation levels, no need to show)
+  const displayEntries = chain.filter(e => e.amount >= 900)
+
+  // If chain only reached 900 as WIN (300 was loss → 900 is trivial result), skip entirely
+  if (displayEntries.length === 0) return null
+  if (displayEntries.length === 1 && displayEntries[0].amount === 900 && displayEntries[0].result === 'WIN') return null
+
   return (
     <div className={`flex flex-col gap-1 px-2.5 py-2 rounded-lg border shrink-0
       ${crossed ? 'border-rose-300 bg-rose-50' :
@@ -239,7 +256,7 @@ function ChainChip({ chain }) {
         )}
       </div>
       <div className="flex items-center gap-0.5">
-        {chain.map((e, i) => (
+        {displayEntries.map((e, i) => (
           <div key={i} className="flex items-center gap-0.5">
             <div className="flex flex-col items-center gap-0.5">
               <span className={`text-[10px] font-bold px-1 py-0.5 rounded border leading-none
@@ -253,7 +270,7 @@ function ChainChip({ chain }) {
                 {e.result === 'WIN' ? 'W' : 'L'}
               </span>
             </div>
-            {i < chain.length - 1 && <span className="text-gray-200 text-[10px] pb-3">›</span>}
+            {i < displayEntries.length - 1 && <span className="text-gray-200 text-[10px] pb-3">›</span>}
           </div>
         ))}
       </div>
@@ -334,6 +351,7 @@ function BetTablePage({ allChains }) {
   const [selectedMonth, setSelectedMonth] = useState(currentMonth)
   const [only729, setOnly729]             = useState(false)
   const [stakes, setStakes]               = useState(DEFAULT_STAKES)
+  const [monthlyInvest, setMonthlyInvest] = useState({})
   const [timeFrom, setTimeFrom]           = useState({ h: '', ampm: 'AM' })
   const [timeTo, setTimeTo]               = useState({ h: '', ampm: 'PM' })
   const [skipTriggers, setSkipTriggers]   = useState(new Set())  // empty = off
@@ -346,8 +364,19 @@ function BetTablePage({ allChains }) {
   })
 
   const updateStake = (label, val) => {
+    if (val === '' || val === undefined) {
+      setStakes(s => { const n = { ...s }; delete n[label]; return n })
+      return
+    }
     const n = parseInt(val, 10)
     if (!isNaN(n) && n >= 0) setStakes(s => ({ ...s, [label]: n }))
+  }
+
+  const getMonthInvest = (month) => monthlyInvest[month] ?? DEFAULT_MONTH_INVEST
+  const updateMonthInvest = (month, val) => {
+    if (val === '') { setMonthlyInvest(m => { const n = { ...m }; delete n[month]; return n }); return }
+    const n = parseInt(val, 10)
+    if (!isNaN(n) && n >= 0) setMonthlyInvest(m => ({ ...m, [month]: n }))
   }
 
   const allRows = useMemo(() => {
@@ -390,17 +419,17 @@ function BetTablePage({ allChains }) {
     })
 
     // Pass 3: compute running balance (skipped rows don't affect bankroll)
-    let balance  = STARTING_BALANCE
+    let balance  = 0
     let curMonth = null
     return withSkip.map(row => {
       if (row.month !== curMonth) {
-        balance  = STARTING_BALANCE
+        balance  = monthlyInvest[row.month] ?? DEFAULT_MONTH_INVEST
         curMonth = row.month
       }
       if (!row.skipped) balance += (row.pnl ?? 0)
       return { ...row, balance }
     })
-  }, [allChains, stakes, timeFrom, timeTo, skipTriggers, skipCount])
+  }, [allChains, stakes, timeFrom, timeTo, skipTriggers, skipCount, monthlyInvest])
 
   const count729 = useMemo(() => allRows.filter(r => r.maxAmt >= 72900).length, [allRows])
 
@@ -431,15 +460,16 @@ function BetTablePage({ allChains }) {
   // Per-month breakdown (used for both single-month card and all-months summary)
   const perMonthStats = useMemo(() => {
     return months.filter(m => m !== 'all').map(m => {
-      const monthRows = allRows.filter(r => r.month === m)
+      const monthRows  = allRows.filter(r => r.month === m)
       if (!monthRows.length) return null
-      const closeBal = monthRows[monthRows.length - 1].balance
-      const minBal   = Math.min(STARTING_BALANCE, ...monthRows.map(r => r.balance))
-      const maxBal   = Math.max(STARTING_BALANCE, ...monthRows.map(r => r.balance))
-      const netPnL   = closeBal - STARTING_BALANCE
-      return { month: m, label: monthLabel(m), closeBal, minBal, maxBal, netPnL, sessions: monthRows.length }
+      const startBal   = monthlyInvest[m] ?? DEFAULT_MONTH_INVEST
+      const closeBal   = monthRows[monthRows.length - 1].balance
+      const minBal     = Math.min(startBal, ...monthRows.map(r => r.balance))
+      const maxBal     = Math.max(startBal, ...monthRows.map(r => r.balance))
+      const netPnL     = closeBal - startBal
+      return { month: m, label: monthLabel(m), startBal, closeBal, minBal, maxBal, netPnL, sessions: monthRows.length }
     }).filter(Boolean)
-  }, [allRows, months])
+  }, [allRows, months, monthlyInvest])
 
   const monthStats = useMemo(() => {
     if (selectedMonth === 'all') return null
@@ -458,8 +488,12 @@ function BetTablePage({ allChains }) {
       {/* summary bar */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-3 flex flex-wrap gap-6 items-center">
         <div>
-          <p className="text-xs text-gray-400">Starting Balance</p>
-          <p className="text-lg font-bold text-gray-700">₹{STARTING_BALANCE.toLocaleString()}</p>
+          <p className="text-xs text-gray-400">
+            {selectedMonth !== 'all' ? 'Monthly Invest' : 'Default Invest'}
+          </p>
+          <p className="text-lg font-bold text-gray-700">
+            ₹{(selectedMonth !== 'all' ? getMonthInvest(selectedMonth) : DEFAULT_MONTH_INVEST).toLocaleString()}
+          </p>
         </div>
         {selectedMonth === 'all' ? (
           <div>
@@ -472,7 +506,7 @@ function BetTablePage({ allChains }) {
           <div>
             <p className="text-xs text-gray-400">Month End Balance</p>
             <p className={`text-lg font-bold ${(monthStats?.netPnL ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-              ₹{(monthStats?.closeBal ?? STARTING_BALANCE).toLocaleString()}
+              ₹{(monthStats?.closeBal ?? getMonthInvest(selectedMonth)).toLocaleString()}
             </p>
           </div>
         )}
@@ -484,27 +518,61 @@ function BetTablePage({ allChains }) {
           <p className="text-xs text-gray-400">Bet Sessions</p>
           <p className="text-lg font-bold text-gray-700">{rows.length}</p>
         </div>
-        {/* month filter */}
+        {/* month invest input */}
+        {selectedMonth !== 'all' && (
+          <div className="w-full border-t border-gray-100 pt-3 mt-1">
+            <p className="text-xs text-gray-400 font-medium mb-2">Invest Amount — {monthLabel(selectedMonth)}</p>
+            <div className="flex items-center border border-blue-200 rounded-lg overflow-hidden w-40">
+              <span className="text-xs text-gray-400 px-2 bg-blue-50 border-r border-blue-200">₹</span>
+              <input
+                type="number"
+                min="0"
+                placeholder="50000"
+                value={monthlyInvest[selectedMonth] ?? ''}
+                onChange={e => updateMonthInvest(selectedMonth, e.target.value)}
+                className="text-sm font-bold text-blue-800 w-full px-2 py-1.5 outline-none"
+              />
+            </div>
+            <p className="text-[11px] text-gray-400 mt-1">Default ₹{DEFAULT_MONTH_INVEST.toLocaleString()} · used as starting balance</p>
+          </div>
+        )}
         {/* stake inputs */}
         <div className="w-full border-t border-gray-100 pt-3 mt-1">
-          <p className="text-xs text-gray-400 font-medium mb-2">Bet Stakes (editable)</p>
+          <p className="text-xs text-gray-400 font-medium mb-2">Your Bet Amount Per Level</p>
           <div className="flex flex-wrap gap-3">
-            {BET_LEVELS.map(lvl => (
+            {BET_LEVELS.map((lvl, i) => (
               <div key={lvl.label} className="flex items-center gap-1.5">
-                <span className="text-xs font-semibold text-gray-600 w-10">{lvl.label}</span>
-                <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden">
-                  <span className="text-xs text-gray-400 px-2 bg-gray-50 border-r border-gray-200">₹</span>
+                <span className={`text-xs font-semibold w-12 ${i >= 5 ? 'text-rose-600' : 'text-gray-600'}`}>{lvl.label}</span>
+                <div className={`flex items-center border rounded-lg overflow-hidden ${i >= 5 ? 'border-rose-200' : 'border-gray-200'}`}>
+                  <span className={`text-xs px-2 border-r ${i >= 5 ? 'text-rose-400 bg-rose-50 border-rose-200' : 'text-gray-400 bg-gray-50 border-gray-200'}`}>₹</span>
                   <input
                     type="number"
                     min="0"
-                    value={stakes[lvl.label]}
+                    placeholder="0"
+                    value={stakes[lvl.label] ?? ''}
                     onChange={e => updateStake(lvl.label, e.target.value)}
-                    className="text-xs font-bold text-gray-800 w-16 px-2 py-1 outline-none"
+                    className={`text-xs font-bold w-16 px-2 py-1 outline-none ${i >= 5 ? 'text-rose-800' : 'text-gray-800'}`}
                   />
                 </div>
               </div>
             ))}
+            {/* catch-all for non-3x amounts above 72900 */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-semibold text-purple-600 w-20">other+</span>
+              <div className="flex items-center border border-purple-200 rounded-lg overflow-hidden">
+                <span className="text-xs text-purple-400 px-2 bg-purple-50 border-r border-purple-200">₹</span>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="0"
+                  value={stakes['above729x'] ?? ''}
+                  onChange={e => updateStake('above729x', e.target.value)}
+                  className="text-xs font-bold text-purple-800 w-16 px-2 py-1 outline-none"
+                />
+              </div>
+            </div>
           </div>
+          <p className="text-[11px] text-gray-400 mt-1.5">2187x / 6561x = exact 3x levels · <span className="text-purple-400">other+</span> = any non-3x amount above 729x (100K, 500K, 1M etc.)</p>
         </div>
 
         <div className="w-full border-t border-gray-100 pt-3 flex items-center gap-2 flex-wrap">
@@ -611,7 +679,7 @@ function BetTablePage({ allChains }) {
           <div className="flex items-center justify-between flex-wrap gap-3">
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">📊 All Months Summary</p>
             <div className="flex gap-6 text-xs">
-              <span className="text-gray-400">{allMonthsTotal.months} months · ₹{STARTING_BALANCE.toLocaleString()} each</span>
+              <span className="text-gray-400">{allMonthsTotal.months} months · ₹{DEFAULT_MONTH_INVEST.toLocaleString()} default invest</span>
               {allMonthsTotal.bestMonth && (
                 <span className="text-emerald-600 font-semibold">
                   Best: {allMonthsTotal.bestMonth.label} ({allMonthsTotal.bestMonth.netPnL >= 0 ? '+' : ''}₹{allMonthsTotal.bestMonth.netPnL.toLocaleString()})
@@ -641,7 +709,7 @@ function BetTablePage({ allChains }) {
                   <tr key={s.month} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
                     onClick={() => setSelectedMonth(s.month)}>
                     <td className="py-1.5 pr-4 font-medium text-gray-700">{s.label}</td>
-                    <td className="py-1.5 px-4 text-right text-gray-500">₹{STARTING_BALANCE.toLocaleString()}</td>
+                    <td className="py-1.5 px-4 text-right text-gray-500">₹{s.startBal.toLocaleString()}</td>
                     <td className="py-1.5 px-4 text-right text-red-400">₹{s.minBal.toLocaleString()}</td>
                     <td className="py-1.5 px-4 text-right text-emerald-600">₹{s.maxBal.toLocaleString()}</td>
                     <td className="py-1.5 px-4 text-right text-gray-700 font-medium">₹{s.closeBal.toLocaleString()}</td>
@@ -652,7 +720,7 @@ function BetTablePage({ allChains }) {
                 ))}
                 <tr className="bg-gray-50 font-bold">
                   <td className="py-2 pr-4 text-gray-700">Total</td>
-                  <td className="py-2 px-4 text-right text-gray-500">₹{(STARTING_BALANCE * allMonthsTotal.months).toLocaleString()}</td>
+                  <td className="py-2 px-4 text-right text-gray-500">₹{perMonthStats.reduce((s, m) => s + m.startBal, 0).toLocaleString()}</td>
                   <td className="py-2 px-4" />
                   <td className="py-2 px-4" />
                   <td className="py-2 px-4" />
@@ -675,7 +743,7 @@ function BetTablePage({ allChains }) {
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
             <div>
               <p className="text-[11px] text-gray-400">Opening Balance</p>
-              <p className="text-base font-bold text-gray-700">₹{STARTING_BALANCE.toLocaleString()}</p>
+              <p className="text-base font-bold text-gray-700">₹{monthStats.startBal.toLocaleString()}</p>
             </div>
             <div>
               <p className="text-[11px] text-gray-400">Lowest Reached</p>
@@ -952,6 +1020,797 @@ function HeatmapPage({ allChains }) {
   )
 }
 
+// ─── PAGE 4: P&L Simulator ────────────────────────────────────────────────────
+
+// Build chains that include ALL levels (100, 300, 900, ...) not just 900+
+function buildAllLevelChains(entries) {
+  const chains = []
+  let cur = []
+
+  for (const entry of entries) {
+    if (!isValidAmount(entry.amount)) continue
+
+    const e = { ...entry, side: sideColor(entry.text) }
+    const prev = cur[cur.length - 1]
+    const gapBreak = prev && minutesDiff(prev.date, prev.time, e.date, e.time) > 10
+
+    if ((e.amount === 100 || gapBreak) && cur.length > 0) {
+      chains.push([...cur])
+      cur = []
+    }
+    cur.push(e)
+  }
+
+  if (cur.length > 0) {
+    chains.push(cur)
+  }
+
+  return chains
+}
+
+function getAllLevelChainsSorted(results) {
+  const byType = {}
+  for (const e of results) {
+    if (!byType[e.type]) byType[e.type] = []
+    byType[e.type].push(e)
+  }
+  const all = []
+  for (const entries of Object.values(byType)) {
+    for (const chain of buildAllLevelChains(entries)) all.push(chain)
+  }
+  all.sort((a, b) => new Date(`${a[0].date}T${a[0].time}`) - new Date(`${b[0].date}T${b[0].time}`))
+  return all
+}
+
+// Determine the win level index in a chain.
+// The last entry in the chain is the WIN. We map its game amount to a level index.
+// Chain structure: [100(L), 300(L), 900(W)] → win at level index 2 (900)
+// Chain: [100(W)] → win at level index 0 (100)
+// Chain: [100(L), 100(W)] → the second 100 means it reset, win at level 0
+function getChainWinInfo(chain) {
+  const maxAmt = Math.max(...chain.map(e => e.amount))
+  const lastEntry = chain[chain.length - 1]
+  const winAmt = lastEntry.amount
+
+  // Find the highest level reached in the chain
+  const maxLevelIdx = ALL_GAME_LEVELS.findIndex(a => a >= maxAmt)
+  const highestLevelIdx = maxLevelIdx === -1 ? ALL_GAME_LEVELS.length - 1 : maxLevelIdx
+
+  // The win level is the last entry's amount
+  const winLevelIdx = ALL_GAME_LEVELS.indexOf(winAmt)
+
+  // True BUST = chain went beyond ALL defined levels (above L12)
+  // Chains ending at L8-L12 are wins at those levels, not busts
+  const lastDefinedLevel = ALL_GAME_LEVELS[ALL_GAME_LEVELS.length - 1]
+  const isNoLimit = maxAmt > lastDefinedLevel
+
+  return {
+    chain,
+    maxAmt,
+    winAmt,
+    highestLevelIdx,
+    winLevelIdx: winLevelIdx === -1 ? highestLevelIdx : winLevelIdx,
+    isNoLimit,
+    levelsPlayed: chain.length,
+    date: chain[0].date,
+    time: chain[0].time,
+    type: chain[0].type,
+    side: lastEntry.side || sideColor(lastEntry.text),
+  }
+}
+
+// Calculate P&L for a chain with user's custom bet amounts per level
+// customBets = [L1:100, L2:300, L3:900, L4:2700, L5:8100, L6:24300, L7:72900, L8:218700, L9:656100, L10:1968300, L11:5904900, L12:17714700]
+// Above 72900 amounts may not follow exact 3x — non-matching amounts fall back to index position
+// Each message = one bet level. The last message = WIN.
+// All messages before the last = LOSS (money spent).
+// WIN payout = 2x the bet at that level
+// P&L = payout - total invested
+function simulatePnL(chainInfo, customBets) {
+  const { chain, isNoLimit } = chainInfo
+
+  let totalInvested = 0
+  const bets = []
+
+  for (let i = 0; i < chain.length; i++) {
+    const entry = chain[i]
+    const levelIdx = ALL_GAME_LEVELS.indexOf(entry.amount)
+    const idx = levelIdx === -1 ? Math.min(i, customBets.length - 1) : levelIdx
+    const betAmt = customBets[idx] ?? 0
+    const isWin = i === chain.length - 1
+
+    bets.push({
+      gameAmount: entry.amount,
+      betAmount: betAmt,
+      isWin,
+      levelIdx: idx,
+      side: entry.side || sideColor(entry.text),
+      time: entry.time,
+    })
+
+    totalInvested += betAmt
+  }
+
+  // Payout = 2x the winning (last) bet amount
+  // If win bet = 0 (user didn't place at that level) → payout = 0, P&L = -totalInvested
+  // If isNoLimit (beyond L12) → chain busted past all defined levels, payout = 0
+  const winBet = bets[bets.length - 1].betAmount
+  const payout = isNoLimit ? 0 : winBet * 2
+  const pnl = payout - totalInvested
+
+  return {
+    bets,
+    totalInvested,
+    payout,
+    pnl,
+    isNoLimit,
+  }
+}
+
+function SimulatorPage({ results }) {
+  // Custom bet amounts per level — user can type any amount for each
+  const [customBets, setCustomBets] = useState([100, 300, 900, 2700, 8100, 24300, 72900, 218700, 656100, 1968300, 5904900, 17714700])
+  const [selectedYear, setSelectedYear] = useState('all')
+  const [selectedMonth, setSelectedMonth] = useState('all')
+  const [selectedType, setSelectedType] = useState('all')
+  const [expandedRows, setExpandedRows] = useState(new Set())
+  const [page, setPage] = useState(1)
+  const [initialCapital, setInitialCapital] = useState('')
+  const [skipTriggers, setSkipTriggers] = useState(new Set())
+  const [skipCount, setSkipCount]       = useState(2)
+  const PAGE_SIZE = 100
+
+  const toggleSimSkipTrigger = (t) => setSkipTriggers(prev => {
+    const next = new Set(prev); if (next.has(t)) next.delete(t); else next.add(t); return next
+  })
+  // Build all-level chains from live results (auto-updates when backend fetches new data)
+  const allLevelChains = useMemo(() => {
+    if (!results) return []
+    return getAllLevelChainsSorted(results)
+  }, [results])
+
+  // Process chains with simulation
+  const processed = useMemo(() => {
+    return allLevelChains.map(chain => {
+      const info = getChainWinInfo(chain)
+      const sim = simulatePnL(info, customBets)
+      return { ...info, sim }
+    })
+  }, [allLevelChains, customBets])
+
+  // Get available months
+  // Get available years
+  const years = useMemo(() => {
+    const seen = new Set()
+    processed.forEach(p => seen.add(p.date.slice(0, 4)))
+    return ['all', ...Array.from(seen).sort((a,b)=>b-a)] // newest first
+  }, [processed])
+
+  // Get available months (filtered by selectedYear if not 'all')
+  const months = useMemo(() => {
+    const seen = new Set()
+    processed.forEach(p => {
+      if (selectedYear === 'all' || p.date.slice(0,4) === selectedYear) {
+        seen.add(p.date.slice(0, 7))
+      }
+    })
+    return ['all', ...Array.from(seen).sort()]
+  }, [processed, selectedYear])
+
+  // Get available types
+  const types = useMemo(() => {
+    const seen = new Set()
+    processed.forEach(p => seen.add(p.type))
+    return ['all', ...Array.from(seen).sort()]
+  }, [processed])
+  // duplicate types memo removed
+
+  // Filter
+  const filtered = useMemo(() => {
+    let rows = processed
+    if (selectedYear !== 'all') rows = rows.filter(r => r.date.slice(0, 4) === selectedYear)
+    if (selectedMonth !== 'all') rows = rows.filter(r => r.date.slice(0, 7) === selectedMonth)
+    if (selectedType !== 'all') rows = rows.filter(r => r.type === selectedType)
+    // apply skip logic
+    if (skipTriggers.size > 0) {
+      let skipRemaining = 0
+      rows = rows.map(row => {
+        if (skipRemaining > 0) { skipRemaining--; return { ...row, skipped: true } }
+        if (skipTriggers.has('729x')     && row.maxAmt === 72900)  skipRemaining = skipCount
+        if (skipTriggers.has('no_limit') && row.isNoLimit)         skipRemaining = skipCount
+        if (skipTriggers.has('243x')     && row.winAmt === 24300)  skipRemaining = skipCount
+        return { ...row, skipped: false }
+      })
+    } else {
+      rows = rows.map(row => ({ ...row, skipped: false }))
+    }
+    return rows
+  }, [processed, selectedYear, selectedMonth, selectedType, skipTriggers, skipCount])
+
+  // Stats (skipped rows excluded from P&L)
+  const stats = useMemo(() => {
+    let totalPnL = 0
+    let totalWins = 0
+    let totalLosses = 0
+    let totalInvested = 0
+    let totalPayout = 0
+    const levelWins = {} // how many wins at each level
+    const levelCounts = {} // how many chains reached each level
+
+    for (const row of filtered) {
+      if (row.skipped) continue
+      totalPnL += row.sim.pnl
+      totalInvested += row.sim.totalInvested
+      totalPayout += row.sim.payout
+      if (row.sim.pnl >= 0) totalWins++
+      else totalLosses++
+
+      // Track level wins
+      const winLevel = row.winAmt
+      levelWins[winLevel] = (levelWins[winLevel] || 0) + 1
+
+      // Track how deep chains went
+      const maxLevel = row.maxAmt
+      for (const lvl of ALL_GAME_LEVELS) {
+        if (maxLevel >= lvl) {
+          levelCounts[lvl] = (levelCounts[lvl] || 0) + 1
+        }
+      }
+    }
+
+    // Running balance (skip excluded)
+    let balance = 0
+    let minBalance = 0
+    let maxBalance = 0
+    const balanceHistory = []
+    for (const row of filtered) {
+      if (row.skipped) continue
+      balance += row.sim.pnl
+      if (balance < minBalance) minBalance = balance
+      if (balance > maxBalance) maxBalance = balance
+      balanceHistory.push(balance)
+    }
+
+    const activeSessions = filtered.filter(r => !r.skipped).length
+    return {
+      totalPnL,
+      totalWins,
+      totalLosses,
+      totalInvested,
+      totalPayout,
+      winRate: activeSessions > 0 ? ((totalWins / activeSessions) * 100).toFixed(1) : '0',
+      levelWins,
+      levelCounts,
+      totalSessions: activeSessions,
+      skippedSessions: filtered.length - activeSessions,
+      minBalance,
+      maxBalance,
+      finalBalance: balance,
+    }
+  }, [filtered])
+
+  // Running balance for table (skipped rows don't affect balance)
+  const rowsWithBalance = useMemo(() => {
+    let balance = 0
+    return filtered.map(row => {
+      if (!row.skipped) balance += row.sim.pnl
+      return { ...row, runningBalance: balance }
+    })
+  }, [filtered])
+
+  const displayRows = useMemo(() => [...rowsWithBalance].reverse(), [rowsWithBalance])
+
+  // Pagination
+  const totalPages = Math.max(1, Math.ceil(displayRows.length / PAGE_SIZE))
+  const safeP = Math.min(page, totalPages)
+  const pagedRows = useMemo(() => displayRows.slice((safeP - 1) * PAGE_SIZE, safeP * PAGE_SIZE), [displayRows, safeP])
+
+  // Reset page when filters change
+  useEffect(() => { setPage(1) }, [selectedYear, selectedMonth, selectedType])
+  // Reset month when year changes
+  useEffect(() => { setSelectedMonth('all') }, [selectedYear])
+
+  const toggleExpand = (idx) => {
+    setExpandedRows(prev => {
+      const next = new Set(prev)
+      if (next.has(idx)) next.delete(idx)
+      else next.add(idx)
+      return next
+    })
+  }
+
+  const monthLabel = (key) => {
+    if (key === 'all') return 'All'
+    const d = new Date(key + '-01')
+    return d.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' })
+  }
+
+
+
+  if (!results) {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-8 py-10 text-center">
+        <div className="inline-block w-8 h-8 border-4 border-violet-200 border-t-violet-600 rounded-full animate-spin mb-3" />
+        <p className="text-gray-500 text-sm font-medium">Loading data...</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Data source info */}
+      <div className="bg-violet-50 border border-violet-200 rounded-xl px-4 py-2 flex items-center gap-3">
+        <span className="text-violet-600 text-xs font-bold px-2 py-0.5 rounded-full bg-violet-100 border border-violet-200">LIVE</span>
+        <span className="text-xs text-violet-700">
+          {results.length.toLocaleString()} signals · {allLevelChains.length.toLocaleString()} sessions · auto-updates every 30s
+        </span>
+      </div>
+
+      {/* Custom Bet Amounts Per Level */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4">
+        <p className="text-xs text-gray-400 font-medium mb-3">Your Bet Amount Per Level <span className="text-gray-300">(type any amount you want for each level)</span></p>
+        <div className="flex flex-wrap gap-2">
+          {ALL_GAME_LEVELS.map((lvl, i) => {
+            const colorClass = i <= 1 ? 'border-slate-300 bg-slate-50 focus-within:border-slate-500'
+              : i === 2 ? 'border-violet-300 bg-violet-50 focus-within:border-violet-500'
+              : i === 3 ? 'border-yellow-300 bg-yellow-50 focus-within:border-yellow-500'
+              : i === 4 ? 'border-orange-300 bg-orange-50 focus-within:border-orange-500'
+              : i === 5 ? 'border-rose-300 bg-rose-50 focus-within:border-rose-500'
+              : i === 6 ? 'border-red-400 bg-red-50 focus-within:border-red-600'
+              : i === 7 ? 'border-red-500 bg-red-100 focus-within:border-red-700'
+              : i === 8 ? 'border-red-600 bg-red-100 focus-within:border-red-800'
+              : i === 9 ? 'border-red-700 bg-red-200 focus-within:border-red-900'
+              : i === 10 ? 'border-red-800 bg-red-200 focus-within:border-red-900'
+              : 'border-red-900 bg-red-300 focus-within:border-red-900'
+            const textColor = i <= 1 ? 'text-slate-700'
+              : i === 2 ? 'text-violet-700'
+              : i === 3 ? 'text-yellow-700'
+              : i === 4 ? 'text-orange-700'
+              : i === 5 ? 'text-rose-700'
+              : 'text-red-900'
+            return (
+              <div key={lvl} className="flex items-center gap-1">
+                <div className="text-center">
+                  <div className="text-[10px] text-gray-400 leading-none mb-1">Lvl {i + 1}</div>
+                  <div className={`flex items-center border-2 rounded-lg overflow-hidden transition-colors ${colorClass}`}>
+                    <span className={`text-[11px] font-bold px-1.5 py-1.5 border-r border-inherit opacity-60`}>₹</span>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={customBets[i] === 0 ? '' : customBets[i]}
+                      onChange={e => {
+                        const v = e.target.value === '' ? 0 : parseInt(e.target.value, 10)
+                        if (!isNaN(v) && v >= 0) {
+                          setCustomBets(prev => {
+                            const next = [...prev]
+                            next[i] = v
+                            return next
+                          })
+                        }
+                      }}
+                      className={`text-sm font-bold w-20 px-1.5 py-1.5 outline-none bg-transparent ${textColor}`}
+                    />
+                  </div>
+                  <div className="text-[9px] text-gray-300 leading-none mt-1">Game: {fmt(lvl)}</div>
+                  <div className="text-[9px] text-gray-300 leading-none">Total: ₹{customBets.slice(0, i + 1).reduce((a, b) => a + b, 0).toLocaleString()}</div>
+                </div>
+                {i < ALL_GAME_LEVELS.length - 1 && <span className="text-gray-200 text-xs pb-4">→</span>}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Filters */}
+        <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-gray-100">
+          <span className="text-xs text-gray-400 font-medium">Year:</span>
+          <div className="flex flex-wrap gap-1">
+            {years.map(y => (
+              <button key={y}
+                onClick={() => setSelectedYear(y)}
+                className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors
+                  ${selectedYear === y
+                    ? 'bg-indigo-700 text-white border-indigo-700'
+                    : 'bg-white text-gray-500 border-gray-200 hover:border-indigo-400'}`}>
+                {y === 'all' ? 'All' : y}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-gray-400 font-medium ml-3">Month:</span>
+          <div className="flex flex-wrap gap-1">
+            {months.map(m => (
+              <button key={m}
+                onClick={() => setSelectedMonth(m)}
+                className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors
+                  ${selectedMonth === m
+                    ? 'bg-slate-700 text-white border-slate-700'
+                    : 'bg-white text-gray-500 border-gray-200 hover:border-slate-400'}`}>
+                {monthLabel(m)}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-gray-400 font-medium ml-3">Game:</span>
+          <div className="flex gap-1">
+            {types.map(t => (
+              <button key={t}
+                onClick={() => setSelectedType(t)}
+                className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors
+                  ${selectedType === t
+                    ? 'bg-violet-600 text-white border-violet-600'
+                    : 'bg-white text-gray-500 border-gray-200 hover:border-violet-400'}`}>
+                {t === 'all' ? 'All Games' : t}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Skip sessions */}
+        <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-gray-100">
+          <span className="text-xs text-gray-400 font-medium">Skip sessions after:</span>
+          {[
+            { value: '243x',     label: '243x'     },
+            { value: '729x',     label: '729x'     },
+            { value: 'no_limit', label: 'No Limit' },
+          ].map(opt => (
+            <button key={opt.value}
+              onClick={() => toggleSimSkipTrigger(opt.value)}
+              className={`text-xs px-3 py-1 rounded-full border font-semibold transition-colors
+                ${skipTriggers.has(opt.value)
+                  ? 'bg-amber-500 text-white border-amber-500'
+                  : 'bg-white text-gray-600 border-gray-200 hover:border-amber-400'}`}>
+              {opt.label}
+            </button>
+          ))}
+          {skipTriggers.size > 0 && (
+            <>
+              <span className="text-xs text-gray-400 ml-1">skip next</span>
+              {[2, 3, 4, 5].map(n => (
+                <button key={n}
+                  onClick={() => setSkipCount(n)}
+                  className={`text-xs w-7 h-7 rounded-full border font-bold transition-colors
+                    ${skipCount === n
+                      ? 'bg-amber-500 text-white border-amber-500'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-amber-400'}`}>
+                  {n}
+                </button>
+              ))}
+              <span className="text-xs text-gray-400">sessions</span>
+              <button
+                onClick={() => setSkipTriggers(new Set())}
+                className="text-xs text-gray-400 hover:text-gray-600 underline ml-1">
+                clear
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* P&L Summary Card */}
+      {(() => {
+        const capital = parseInt(initialCapital, 10)
+        const hasCapital = !isNaN(capital) && capital > 0
+        const finalBal = hasCapital ? capital + stats.totalPnL : null
+        const roi = hasCapital ? ((stats.totalPnL / capital) * 100).toFixed(1) : null
+        return (
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4 space-y-4">
+            {/* top row: initial capital input + sessions/winrate */}
+            <div className="flex flex-wrap items-center gap-6">
+              <div>
+                <p className="text-[11px] text-gray-400 mb-1">Initial Investment (optional)</p>
+                <div className="flex items-center border-2 border-blue-200 rounded-lg overflow-hidden w-44 focus-within:border-blue-400">
+                  <span className="text-sm font-bold text-blue-400 px-2 bg-blue-50 border-r border-blue-200 py-1.5">₹</span>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="e.g. 50000"
+                    value={initialCapital}
+                    onChange={e => setInitialCapital(e.target.value)}
+                    className="text-sm font-bold text-blue-800 px-2 py-1.5 outline-none w-full bg-transparent"
+                  />
+                </div>
+              </div>
+              <div>
+                <p className="text-[11px] text-gray-400">Total Sessions</p>
+                <p className="text-xl font-bold text-gray-700">{stats.totalSessions.toLocaleString()}</p>
+                {stats.skippedSessions > 0 && (
+                  <p className="text-[10px] text-amber-500 mt-0.5">{stats.skippedSessions} skipped</p>
+                )}
+              </div>
+              <div>
+                <p className="text-[11px] text-gray-400">Win Rate</p>
+                <p className="text-xl font-bold text-emerald-600">{stats.winRate}%</p>
+              </div>
+              <div>
+                <p className="text-[11px] text-gray-400">Wins / Losses</p>
+                <p className="text-xl font-bold">
+                  <span className="text-emerald-600">{stats.totalWins}</span>
+                  <span className="text-gray-300"> / </span>
+                  <span className="text-red-500">{stats.totalLosses}</span>
+                </p>
+              </div>
+            </div>
+
+            {/* P&L breakdown row */}
+            <div className="border-t border-gray-100 pt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+              {hasCapital && (
+                <div>
+                  <p className="text-[11px] text-gray-400">Initial Capital</p>
+                  <p className="text-lg font-bold text-gray-700">₹{capital.toLocaleString()}</p>
+                </div>
+              )}
+              <div>
+                <p className="text-[11px] text-gray-400">Total Bet (Invested)</p>
+                <p className="text-lg font-bold text-gray-700">₹{stats.totalInvested.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-[11px] text-gray-400">Total Payout</p>
+                <p className="text-lg font-bold text-emerald-600">₹{stats.totalPayout.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-[11px] text-gray-400">Net P&L</p>
+                <p className={`text-lg font-bold ${stats.totalPnL >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                  {stats.totalPnL >= 0 ? '+' : ''}₹{stats.totalPnL.toLocaleString()}
+                </p>
+              </div>
+              {hasCapital && (
+                <div>
+                  <p className="text-[11px] text-gray-400">ROI</p>
+                  <p className={`text-lg font-bold ${Number(roi) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {Number(roi) >= 0 ? '+' : ''}{roi}%
+                  </p>
+                </div>
+              )}
+              {hasCapital && (
+                <div>
+                  <p className="text-[11px] text-gray-400">Final Balance</p>
+                  <p className={`text-lg font-bold ${finalBal >= 0 ? 'text-gray-700' : 'text-red-600'}`}>
+                    ₹{finalBal.toLocaleString()}
+                  </p>
+                </div>
+              )}
+              <div>
+                <p className="text-[11px] text-gray-400">Peak Balance</p>
+                {hasCapital ? (
+                  <>
+                    <p className="text-lg font-bold text-emerald-600">
+                      ₹{(capital + stats.maxBalance).toLocaleString()}
+                    </p>
+                    <p className="text-[10px] text-gray-400 mt-0.5">
+                      P&L at peak: +₹{stats.maxBalance.toLocaleString()}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-lg font-bold text-emerald-600">
+                      {stats.maxBalance >= 0 ? '+' : ''}₹{stats.maxBalance.toLocaleString()}
+                    </p>
+                    <p className="text-[10px] text-gray-400 mt-0.5">Enter capital to see balance</p>
+                  </>
+                )}
+              </div>
+              <div>
+                <p className="text-[11px] text-gray-400">Least Balance</p>
+                {hasCapital ? (
+                  <>
+                    <p className={`text-lg font-bold ${(capital + stats.minBalance) >= 0 ? 'text-gray-700' : 'text-red-600'}`}>
+                      ₹{(capital + stats.minBalance).toLocaleString()}
+                    </p>
+                    <p className="text-[10px] text-gray-400 mt-0.5">
+                      P&L at worst: {stats.minBalance >= 0 ? '+' : ''}₹{stats.minBalance.toLocaleString()}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className={`text-lg font-bold ${stats.minBalance >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {stats.minBalance >= 0 ? '+' : ''}₹{stats.minBalance.toLocaleString()}
+                    </p>
+                    <p className="text-[10px] text-gray-400 mt-0.5">Enter capital to see balance</p>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Level Breakdown */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">📊 Win Level Breakdown</p>
+        <div className="grid grid-cols-7 gap-2">
+          {ALL_GAME_LEVELS.map((lvl, i) => {
+            const wins = stats.levelWins[lvl] || 0
+            const reached = stats.levelCounts[lvl] || 0
+            const pct = stats.totalSessions > 0 ? ((wins / stats.totalSessions) * 100).toFixed(1) : '0'
+            const betAmt = customBets[i] || 0
+            return (
+              <div key={lvl} className={`text-center rounded-lg border px-2 py-3
+                ${i <= 1 ? 'bg-slate-50 border-slate-200' :
+                  i === 2 ? 'bg-violet-50 border-violet-200' :
+                  i === 3 ? 'bg-yellow-50 border-yellow-200' :
+                  i === 4 ? 'bg-orange-50 border-orange-200' :
+                  i === 5 ? 'bg-rose-50 border-rose-300' :
+                            'bg-red-50 border-red-300'}`}>
+                <div className="text-[10px] text-gray-400 font-medium">Level {i + 1}</div>
+                <div className="text-xs font-bold text-gray-600 mt-0.5">{fmt(lvl)}</div>
+                <div className="text-[10px] text-gray-400 mt-1">Bet: ₹{betAmt.toLocaleString()}</div>
+                <div className="text-lg font-bold text-gray-800 mt-1">{wins}</div>
+                <div className="text-[10px] text-gray-400">wins ({pct}%)</div>
+                <div className="text-[10px] text-gray-300 mt-0.5">{reached} reached</div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Sessions Table */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        {/* Pagination top */}
+        <div className="flex items-center justify-between px-5 py-2.5 border-b border-gray-100 bg-gray-50">
+          <span className="text-xs text-gray-400">
+            Showing {((safeP - 1) * PAGE_SIZE + 1).toLocaleString()}-{Math.min(safeP * PAGE_SIZE, displayRows.length).toLocaleString()} of {displayRows.length.toLocaleString()} sessions
+          </span>
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setPage(1)} disabled={safeP <= 1}
+              className="text-xs px-2 py-1 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-100 transition-colors">«</button>
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safeP <= 1}
+              className="text-xs px-2.5 py-1 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-100 transition-colors">‹ Prev</button>
+            <span className="text-xs font-bold text-gray-600 px-2">Page {safeP} / {totalPages}</span>
+            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safeP >= totalPages}
+              className="text-xs px-2.5 py-1 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-100 transition-colors">Next ›</button>
+            <button onClick={() => setPage(totalPages)} disabled={safeP >= totalPages}
+              className="text-xs px-2 py-1 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-100 transition-colors">»</button>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-700 text-white">
+                <th className="px-3 py-3 text-left font-semibold text-xs">Date</th>
+                <th className="px-3 py-3 text-left font-semibold text-xs">Time</th>
+                <th className="px-3 py-3 text-left font-semibold text-xs">Game</th>
+                <th className="px-3 py-3 text-center font-semibold text-xs">Chain</th>
+                <th className="px-3 py-3 text-center font-semibold text-xs">Win Level</th>
+                <th className="px-3 py-3 text-right font-semibold text-xs">Invested</th>
+                <th className="px-3 py-3 text-right font-semibold text-xs">Payout</th>
+                <th className="px-3 py-3 text-right font-semibold text-xs">P&L</th>
+                <th className="px-3 py-3 text-right font-semibold text-xs">Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pagedRows.map((row, i) => {
+                const actualIdx = (safeP - 1) * PAGE_SIZE + i
+                const isExpanded = expandedRows.has(actualIdx)
+                const isLoss = row.sim.pnl < 0
+                const isNoLimit = row.sim.isNoLimit
+                const isDeep = row.chain.length >= 5 // reached 8100+
+
+                return (
+                  <>
+                    <tr key={`row-${i}`}
+                      onClick={() => toggleExpand(actualIdx)}
+                      className={`border-t border-gray-100 cursor-pointer transition-colors hover:bg-gray-50
+                        ${isNoLimit ? 'bg-rose-50' :
+                          isDeep ? 'bg-orange-50' :
+                          isLoss ? 'bg-red-50/50' :
+                          i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
+                      <td className="px-3 py-2.5 text-xs font-medium whitespace-nowrap text-gray-700">
+                        {formatDateShort(row.date)}
+                      </td>
+                      <td className="px-3 py-2.5 text-xs whitespace-nowrap text-gray-500">
+                        {to12h(row.time)}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <TypeTag type={row.type} />
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center justify-center gap-0.5">
+                          {row.sim.bets.map((bet, bi) => (
+                            <span key={bi} className={`text-[10px] font-bold px-1 py-0.5 rounded border leading-none
+                              ${bet.isWin
+                                ? 'bg-emerald-500 text-white border-emerald-600'
+                                : row.sim.bets[bi].levelIdx <= 1 ? 'bg-slate-100 text-slate-500 border-slate-200'
+                                : row.sim.bets[bi].levelIdx === 2 ? 'bg-violet-100 text-violet-600 border-violet-200'
+                                : row.sim.bets[bi].levelIdx === 3 ? 'bg-yellow-100 text-yellow-700 border-yellow-200'
+                                : row.sim.bets[bi].levelIdx === 4 ? 'bg-orange-100 text-orange-700 border-orange-300'
+                                : row.sim.bets[bi].levelIdx === 5 ? 'bg-rose-200 text-rose-700 border-rose-400'
+                                : 'bg-red-300 text-red-900 border-red-500'}`}>
+                              {fmt(bet.gameAmount)}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5 text-center">
+                        <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full
+                          ${isNoLimit ? 'bg-red-200 text-red-800' :
+                            row.winAmt <= 300 ? 'bg-emerald-100 text-emerald-700' :
+                            row.winAmt <= 900 ? 'bg-violet-100 text-violet-700' :
+                            'bg-yellow-100 text-yellow-700'}`}>
+                          {isNoLimit ? 'BUST' : `₹${fmt(row.winAmt)}`}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 text-xs text-right text-gray-500 font-medium">
+                        ₹{row.sim.totalInvested.toLocaleString()}
+                      </td>
+                      <td className="px-3 py-2.5 text-xs text-right font-medium">
+                        <span className={isNoLimit ? 'text-red-400' : 'text-emerald-600'}>
+                          {isNoLimit ? '₹0' : `₹${row.sim.payout.toLocaleString()}`}
+                        </span>
+                      </td>
+                      <td className={`px-3 py-2.5 text-xs text-right font-bold
+                        ${row.sim.pnl >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {row.sim.pnl >= 0 ? '+' : ''}₹{row.sim.pnl.toLocaleString()}
+                      </td>
+                      <td className={`px-3 py-2.5 text-xs text-right font-bold
+                        ${row.runningBalance >= 0 ? 'text-gray-800' : 'text-red-600'}`}>
+                        {row.runningBalance >= 0 ? '' : '-'}₹{Math.abs(row.runningBalance).toLocaleString()}
+                      </td>
+                    </tr>
+                    {/* Expanded detail */}
+                    {isExpanded && (
+                      <tr key={`detail-${i}`} className="border-t border-gray-100">
+                        <td colSpan={9} className="px-4 py-3 bg-gray-50">
+                          <div className="flex flex-wrap gap-3">
+                            {row.sim.bets.map((bet, bi) => (
+                              <div key={bi} className={`flex flex-col items-center gap-1 px-3 py-2 rounded-lg border
+                                ${bet.isWin
+                                  ? 'bg-emerald-50 border-emerald-300'
+                                  : 'bg-white border-gray-200'}`}>
+                                <span className="text-[10px] text-gray-400 font-medium">Level {bet.levelIdx + 1}</span>
+                                <span className="text-[10px] text-gray-300">{to12h(bet.time)}</span>
+                                <span className={`text-xs font-bold
+                                  ${bet.isWin ? 'text-emerald-700' : 'text-gray-600'}`}>
+                                  Game: {fmt(bet.gameAmount)}
+                                </span>
+                                <span className="text-xs font-bold text-violet-600">
+                                  Bet: ₹{bet.betAmount.toLocaleString()}
+                                </span>
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full
+                                  ${bet.isWin ? 'bg-emerald-500 text-white' : 'bg-red-100 text-red-600'}`}>
+                                  {bet.isWin ? 'WIN ✓' : 'LOSS ✗'}
+                                </span>
+                              </div>
+                            ))}
+                            <div className="flex flex-col items-center justify-center gap-1 px-4 py-2 rounded-lg border-2 border-dashed border-gray-300 bg-white">
+                              <span className="text-[10px] text-gray-400 font-medium">Summary</span>
+                              <span className="text-xs text-gray-500">Invested: ₹{row.sim.totalInvested.toLocaleString()}</span>
+                              <span className="text-xs text-emerald-600">Payout: ₹{row.sim.payout.toLocaleString()}</span>
+                              <span className={`text-sm font-bold ${row.sim.pnl >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                P&L: {row.sim.pnl >= 0 ? '+' : ''}₹{row.sim.pnl.toLocaleString()}
+                              </span>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pagination bottom */}
+        <div className="flex items-center justify-between px-5 py-2.5 border-t border-gray-100 bg-gray-50">
+          <span className="text-xs text-gray-400">
+            {displayRows.length.toLocaleString()} total sessions
+          </span>
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setPage(1)} disabled={safeP <= 1}
+              className="text-xs px-2 py-1 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-100 transition-colors">«</button>
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safeP <= 1}
+              className="text-xs px-2.5 py-1 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-100 transition-colors">‹ Prev</button>
+            <span className="text-xs font-bold text-gray-600 px-2">Page {safeP} / {totalPages}</span>
+            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safeP >= totalPages}
+              className="text-xs px-2.5 py-1 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-100 transition-colors">Next ›</button>
+            <button onClick={() => setPage(totalPages)} disabled={safeP >= totalPages}
+              className="text-xs px-2 py-1 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-100 transition-colors">»</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Data loader (shared across routes) ──────────────────────────────────────
 
 function useData() {
@@ -1024,9 +1883,10 @@ function Layout({ data, lastFetched, children }) {
               </div>
             </div>
             <div className="flex gap-1 bg-gray-100 p-1 rounded-lg">
-              <NavLink to="/table"    className={navCls}>Bet Table</NavLink>
-              <NavLink to="/timeline" className={navCls}>Timeline</NavLink>
-              <NavLink to="/heatmap"  className={navCls}>Heatmap</NavLink>
+              <NavLink to="/table"     className={navCls}>Bet Table</NavLink>
+              <NavLink to="/simulator" className={navCls}>P&L Simulator</NavLink>
+              <NavLink to="/timeline"  className={navCls}>Timeline</NavLink>
+              <NavLink to="/heatmap"   className={navCls}>Heatmap</NavLink>
             </div>
           </div>
           <div className="flex gap-2 mt-2">
@@ -1068,10 +1928,11 @@ export default function App() {
     <BrowserRouter>
       <Layout data={data} lastFetched={lastFetched}>
         <Routes>
-          <Route path="/"         element={<Navigate to="/table" replace />} />
-          <Route path="/table"    element={<BetTablePage allChains={all} />} />
-          <Route path="/timeline" element={<TimelinePage dates={dates} allChains={all} />} />
-          <Route path="/heatmap"  element={<HeatmapPage allChains={all} />} />
+          <Route path="/"          element={<Navigate to="/table" replace />} />
+          <Route path="/table"     element={<BetTablePage allChains={all} />} />
+          <Route path="/simulator" element={<SimulatorPage results={data.results} />} />
+          <Route path="/timeline"  element={<TimelinePage dates={dates} allChains={all} />} />
+          <Route path="/heatmap"   element={<HeatmapPage allChains={all} />} />
         </Routes>
       </Layout>
     </BrowserRouter>
