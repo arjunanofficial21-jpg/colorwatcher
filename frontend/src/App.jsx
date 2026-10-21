@@ -1147,7 +1147,7 @@ function simulatePnL(chainInfo, customBets) {
   }
 }
 
-function SimulatorPage({ results }) {
+function SimulatorPage() {
   // Custom bet amounts per level — user can type any amount for each
   const [customBets, setCustomBets] = useState([100, 300, 900, 2700, 8100, 24300, 72900, 218700, 656100, 1968300, 5904900, 17714700])
   const [selectedYear, setSelectedYear] = useState('all')
@@ -1163,11 +1163,45 @@ function SimulatorPage({ results }) {
   const toggleSimSkipTrigger = (t) => setSkipTriggers(prev => {
     const next = new Set(prev); if (next.has(t)) next.delete(t); else next.add(t); return next
   })
-  // Build all-level chains from live results (auto-updates when backend fetches new data)
+  const [bulkData, setBulkData]       = useState(null)
+  const [bulkLoading, setBulkLoading] = useState(true)
+  const [bulkError, setBulkError]     = useState(false)
+  const [uploadedName, setUploadedName] = useState(null)
+
+  // Load default bulk data from public folder
+  useEffect(() => {
+    setBulkLoading(true)
+    fetch('/bulk_2year_data.json')
+      .then(r => { if (!r.ok) throw new Error(); return r.json() })
+      .then(json => { setBulkData(json); setBulkLoading(false); setBulkError(false) })
+      .catch(() => { setBulkLoading(false); setBulkError(true) })
+  }, [])
+
+  // Upload handler — user can load a new JSON file to replace bulk data
+  const handleUpload = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const json = JSON.parse(ev.target.result)
+        if (!json.results) throw new Error('Missing results key')
+        setBulkData(json)
+        setUploadedName(file.name)
+        setBulkError(false)
+      } catch {
+        alert('Invalid JSON file — must have a "results" array.')
+      }
+    }
+    reader.readAsText(file)
+    e.target.value = ''  // reset so same file can be re-uploaded
+  }
+
+  // Build all-level chains from bulk results
   const allLevelChains = useMemo(() => {
-    if (!results) return []
-    return getAllLevelChainsSorted(results)
-  }, [results])
+    if (!bulkData) return []
+    return getAllLevelChainsSorted(bulkData.results)
+  }, [bulkData])
 
   // Process chains with simulation
   const processed = useMemo(() => {
@@ -1327,23 +1361,43 @@ function SimulatorPage({ results }) {
 
 
 
-  if (!results) {
+  if (bulkLoading) {
     return (
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-8 py-10 text-center">
         <div className="inline-block w-8 h-8 border-4 border-violet-200 border-t-violet-600 rounded-full animate-spin mb-3" />
-        <p className="text-gray-500 text-sm font-medium">Loading data...</p>
+        <p className="text-gray-500 text-sm font-medium">Loading bulk data...</p>
+      </div>
+    )
+  }
+
+  if (bulkError || !bulkData) {
+    return (
+      <div className="bg-white rounded-xl border border-red-200 shadow-sm px-8 py-10 text-center space-y-3">
+        <p className="text-red-600 font-bold text-sm">Failed to load bulk_2year_data.json</p>
+        <p className="text-gray-500 text-xs">Upload a data JSON file to continue</p>
+        <label className="inline-flex items-center gap-2 cursor-pointer bg-violet-600 text-white text-xs font-semibold px-4 py-2 rounded-lg hover:bg-violet-700 transition-colors">
+          Upload JSON
+          <input type="file" accept=".json" className="hidden" onChange={handleUpload} />
+        </label>
       </div>
     )
   }
 
   return (
     <div className="space-y-4">
-      {/* Data source info */}
-      <div className="bg-violet-50 border border-violet-200 rounded-xl px-4 py-2 flex items-center gap-3">
-        <span className="text-violet-600 text-xs font-bold px-2 py-0.5 rounded-full bg-violet-100 border border-violet-200">LIVE</span>
-        <span className="text-xs text-violet-700">
-          {results.length.toLocaleString()} signals · {allLevelChains.length.toLocaleString()} sessions · auto-updates every 30s
+      {/* Data source info + upload */}
+      <div className="bg-violet-50 border border-violet-200 rounded-xl px-4 py-2 flex items-center gap-3 flex-wrap">
+        <span className="text-violet-600 text-xs font-bold px-2 py-0.5 rounded-full bg-violet-100 border border-violet-200">
+          {uploadedName ? 'UPLOADED' : 'BULK 2Y'}
         </span>
+        <span className="text-xs text-violet-700">
+          {bulkData.results.length.toLocaleString()} signals · {allLevelChains.length.toLocaleString()} sessions
+          {uploadedName ? ` · ${uploadedName}` : ''}
+        </span>
+        <label className="ml-auto inline-flex items-center gap-1.5 cursor-pointer bg-violet-600 text-white text-xs font-semibold px-3 py-1 rounded-lg hover:bg-violet-700 transition-colors">
+          Upload new data
+          <input type="file" accept=".json" className="hidden" onChange={handleUpload} />
+        </label>
       </div>
 
       {/* Custom Bet Amounts Per Level */}
@@ -1930,7 +1984,7 @@ export default function App() {
         <Routes>
           <Route path="/"          element={<Navigate to="/table" replace />} />
           <Route path="/table"     element={<BetTablePage allChains={all} />} />
-          <Route path="/simulator" element={<SimulatorPage results={data.results} />} />
+          <Route path="/simulator" element={<SimulatorPage />} />
           <Route path="/timeline"  element={<TimelinePage dates={dates} allChains={all} />} />
           <Route path="/heatmap"   element={<HeatmapPage allChains={all} />} />
         </Routes>
