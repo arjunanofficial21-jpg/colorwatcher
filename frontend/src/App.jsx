@@ -1159,6 +1159,8 @@ function SimulatorPage() {
   const [skipTriggers, setSkipTriggers] = useState(new Set())
   const [skipCount, setSkipCount]       = useState(2)
   const [only729, setOnly729]           = useState(false)
+  const [timeFrom, setTimeFrom]         = useState({ h: '', ampm: 'AM' })
+  const [timeTo,   setTimeTo]           = useState({ h: '', ampm: 'PM' })
   const PAGE_SIZE = 100
 
   const toggleSimSkipTrigger = (t) => setSkipTriggers(prev => {
@@ -1251,11 +1253,23 @@ function SimulatorPage() {
 
   // Filter
   const filtered = useMemo(() => {
+    const fromH = to24h(timeFrom.h, timeFrom.ampm)
+    const toH   = to24h(timeTo.h,   timeTo.ampm)
+    const inTimeRange = (timeStr) => {
+      const h = parseInt(timeStr.slice(0, 2), 10)
+      if (fromH !== null && toH !== null)
+        return fromH <= toH ? (h >= fromH && h <= toH) : (h >= fromH || h <= toH)
+      if (fromH !== null) return h >= fromH
+      if (toH   !== null) return h <= toH
+      return true
+    }
+
     let rows = processed
     if (selectedYear !== 'all') rows = rows.filter(r => r.date.slice(0, 4) === selectedYear)
     if (selectedMonth !== 'all') rows = rows.filter(r => r.date.slice(0, 7) === selectedMonth)
     if (selectedType !== 'all') rows = rows.filter(r => r.type === selectedType)
     if (only729) rows = rows.filter(r => r.maxAmt >= 72900)
+    if (fromH !== null || toH !== null) rows = rows.filter(r => inTimeRange(r.time))
     // apply skip logic
     if (skipTriggers.size > 0) {
       let skipRemaining = 0
@@ -1270,7 +1284,7 @@ function SimulatorPage() {
       rows = rows.map(row => ({ ...row, skipped: false }))
     }
     return rows
-  }, [processed, selectedYear, selectedMonth, selectedType, only729, skipTriggers, skipCount])
+  }, [processed, selectedYear, selectedMonth, selectedType, only729, timeFrom, timeTo, skipTriggers, skipCount])
 
   // Stats (skipped rows excluded from P&L)
   const stats = useMemo(() => {
@@ -1351,7 +1365,7 @@ function SimulatorPage() {
   const pagedRows = useMemo(() => displayRows.slice((safeP - 1) * PAGE_SIZE, safeP * PAGE_SIZE), [displayRows, safeP])
 
   // Reset page when filters change
-  useEffect(() => { setPage(1) }, [selectedYear, selectedMonth, selectedType, only729])
+  useEffect(() => { setPage(1) }, [selectedYear, selectedMonth, selectedType, only729, timeFrom, timeTo])
   // Reset month when year changes
   useEffect(() => { setSelectedMonth('all') }, [selectedYear])
 
@@ -1527,6 +1541,41 @@ function SimulatorPage() {
                 : 'bg-white text-gray-600 border-gray-200 hover:border-rose-400'}`}>
             729x+ only
           </button>
+        </div>
+
+        {/* Time range filter */}
+        <div className="flex flex-wrap items-center gap-3 mt-3 pt-3 border-t border-gray-100">
+          <span className="text-xs text-gray-400 font-medium">Time:</span>
+          {[
+            { label: 'From', val: timeFrom, set: setTimeFrom },
+            { label: 'To',   val: timeTo,   set: setTimeTo   },
+          ].map(({ label, val, set }) => (
+            <div key={label} className="flex items-center gap-1.5">
+              <span className="text-xs text-gray-500">{label}</span>
+              <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden">
+                <input
+                  type="number" min="1" max="12" placeholder="hh"
+                  value={val.h}
+                  onChange={e => set(v => ({ ...v, h: e.target.value }))}
+                  className="text-sm font-bold text-gray-800 w-12 px-2 py-1.5 outline-none text-center"
+                />
+                <select
+                  value={val.ampm}
+                  onChange={e => set(v => ({ ...v, ampm: e.target.value }))}
+                  className="text-sm text-gray-600 bg-gray-50 border-l border-gray-200 px-2 py-1.5 outline-none">
+                  <option>AM</option>
+                  <option>PM</option>
+                </select>
+              </div>
+            </div>
+          ))}
+          {(timeFrom.h || timeTo.h) && (
+            <button
+              onClick={() => { setTimeFrom({ h: '', ampm: 'AM' }); setTimeTo({ h: '', ampm: 'PM' }) }}
+              className="text-xs text-gray-400 hover:text-gray-600 underline">
+              clear
+            </button>
+          )}
         </div>
 
         {/* Skip sessions */}
@@ -1875,8 +1924,7 @@ function SimulatorPage() {
         </div>
 
         {/* Pagination bottom */}
-        <div className="flex items-center justify-between px-3 sm:px-5 py-2.5 border-t border-gray-100 bg-gray-50">
-          <span className="text-xs text-gray-400">{displayRows.length.toLocaleString()} total sessions</span>
+        <div className="flex items-center gap-2 px-3 sm:px-5 py-2.5 border-t border-gray-100 bg-gray-50">
           <div className="flex items-center gap-1">
             <button onClick={() => setPage(1)} disabled={safeP <= 1}
               className="text-xs px-2 py-1.5 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-100 transition-colors">«</button>
@@ -1888,6 +1936,7 @@ function SimulatorPage() {
             <button onClick={() => setPage(totalPages)} disabled={safeP >= totalPages}
               className="text-xs px-2 py-1.5 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-100 transition-colors">»</button>
           </div>
+          <span className="text-xs text-gray-400">{displayRows.length.toLocaleString()} total sessions</span>
         </div>
       </div>
     </div>
