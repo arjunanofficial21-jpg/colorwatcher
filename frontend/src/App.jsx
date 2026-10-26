@@ -1730,11 +1730,7 @@ function SimulatorPage() {
       {/* Sessions Table */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
         {/* Pagination top */}
-        <div className="flex items-center justify-between px-3 sm:px-5 py-2.5 border-b border-gray-100 bg-gray-50">
-          <span className="text-xs text-gray-400 hidden sm:inline">
-            Showing {((safeP - 1) * PAGE_SIZE + 1).toLocaleString()}-{Math.min(safeP * PAGE_SIZE, displayRows.length).toLocaleString()} of {displayRows.length.toLocaleString()} sessions
-          </span>
-          <span className="text-xs text-gray-400 sm:hidden">{displayRows.length.toLocaleString()} sessions</span>
+        <div className="flex items-center gap-2 px-3 sm:px-5 py-2.5 border-b border-gray-100 bg-gray-50">
           <div className="flex items-center gap-1">
             <button onClick={() => setPage(1)} disabled={safeP <= 1}
               className="text-xs px-2 py-1.5 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-100 transition-colors">«</button>
@@ -1746,6 +1742,9 @@ function SimulatorPage() {
             <button onClick={() => setPage(totalPages)} disabled={safeP >= totalPages}
               className="text-xs px-2 py-1.5 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-100 transition-colors">»</button>
           </div>
+          <span className="text-xs text-gray-400 hidden sm:inline">
+            Showing {((safeP - 1) * PAGE_SIZE + 1).toLocaleString()}–{Math.min(safeP * PAGE_SIZE, displayRows.length).toLocaleString()} of {displayRows.length.toLocaleString()} sessions
+          </span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
