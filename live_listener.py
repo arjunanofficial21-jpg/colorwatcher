@@ -27,6 +27,7 @@ GROUP_ID_ENV     = os.getenv("TELEGRAM_GROUP_ID", "-1001574277898")  # Colorwiz 
 IST          = timezone(timedelta(hours=5, minutes=30))
 TARGET_TYPES = {"PARITY", "SAPRE", "BCONE", "EMERD"}
 JSON_FILE    = "telegram_content_results.json"
+BULK_FILE    = "frontend/public/bulk_2year_data.json"  # historical baseline
 PUBLIC_JSON  = "frontend/public/data.json"   # served as /data.json by Vite
 CONFIG_FILE  = "listener_config.json"
 PORT         = int(os.getenv("PORT", 8000))  # Render sets PORT automatically
@@ -106,21 +107,35 @@ def extract_target_content(text):
 # ============================================================
 
 def load_existing_data():
-    if not os.path.exists(JSON_FILE):
-        print("No existing JSON found — starting fresh.")
-        return
+    # ── Step 1: load 2-year historical baseline ──────────────────────────────
+    bulk_results = []
+    if os.path.exists(BULK_FILE):
+        with open(BULK_FILE, encoding="utf-8") as f:
+            bulk = json.load(f)
+        bulk_results = bulk.get("results", [])
+        print(f"Loaded {len(bulk_results)} historical results from {BULK_FILE}")
+    else:
+        print(f"No bulk file found at {BULK_FILE} — skipping historical baseline.")
 
-    with open(JSON_FILE, encoding="utf-8") as f:
-        saved = json.load(f)
+    # ── Step 2: load recent live results and merge (deduplicate) ─────────────
+    live_results = []
+    if os.path.exists(JSON_FILE):
+        with open(JSON_FILE, encoding="utf-8") as f:
+            saved = json.load(f)
+        live_results = saved.get("results", [])
+        print(f"Loaded {len(live_results)} live results from {JSON_FILE}")
+
+    # Merge: bulk baseline + any live entries not already in bulk
+    seen = {f"{r['date']}|{r['time']}|{r['type']}|{r['amount']}" for r in bulk_results}
+    new_live = [r for r in live_results if f"{r['date']}|{r['time']}|{r['type']}|{r['amount']}" not in seen]
+    merged = bulk_results + new_live
 
     with _lock:
-        _state["group"]            = saved.get("group", "")
-        _state["messages_scanned"] = saved.get("messages_scanned", 0)
-        _state["matches"]          = saved.get("matches", 0)
-        _state["results"]          = saved.get("results", [])
-        _state["last_updated"]     = datetime.now(IST).isoformat()
+        _state["results"]      = merged
+        _state["matches"]      = len(merged)
+        _state["last_updated"] = datetime.now(IST).isoformat()
 
-    print(f"Loaded {len(_state['results'])} existing results from {JSON_FILE}")
+    print(f"Total after merge: {len(merged)} results ({len(new_live)} new live entries added)")
 
 
 def save_json():
@@ -172,7 +187,15 @@ class APIHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        if path_clean in ("", "/data"):
+        if path_clean == "/ping":
+            body = b'{"status": "ok", "message": "hello world"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self._cors_headers()
+            self.end_headers()
+            self.wfile.write(body)
+        elif path_clean in ("", "/data"):
             with _lock:
                 body = json.dumps(_state, default=str, ensure_ascii=False).encode("utf-8")
             self.send_response(200)

@@ -1149,7 +1149,7 @@ function simulatePnL(chainInfo, customBets) {
 
 function SimulatorPage() {
   // Custom bet amounts per level — user can type any amount for each
-  const [customBets, setCustomBets] = useState([100, 300, 900, 2700, 8100, 24300, 72900, 218700, 656100, 1968300, 5904900, 17714700])
+  const [customBets, setCustomBets] = useState([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
   const [selectedYear, setSelectedYear] = useState('all')
   const [selectedMonth, setSelectedMonth] = useState('all')
   const [selectedType, setSelectedType] = useState('all')
@@ -1163,19 +1163,28 @@ function SimulatorPage() {
   const toggleSimSkipTrigger = (t) => setSkipTriggers(prev => {
     const next = new Set(prev); if (next.has(t)) next.delete(t); else next.add(t); return next
   })
-  const [bulkData, setBulkData]       = useState(null)
-  const [bulkLoading, setBulkLoading] = useState(true)
-  const [bulkError, setBulkError]     = useState(false)
+  const [bulkData, setBulkData]         = useState(null)
+  const [bulkLoading, setBulkLoading]   = useState(true)
+  const [bulkError, setBulkError]       = useState(false)
   const [uploadedName, setUploadedName] = useState(null)
 
-  // Load default bulk data from public folder
-  useEffect(() => {
+  // Fetch from live API (backend merges bulk 2-year history + live data server-side).
+  // Falls back to local bulk_2year_data.json if API unavailable.
+  const loadData = () => {
     setBulkLoading(true)
-    fetch('/bulk_2year_data.json')
+    setBulkError(false)
+    fetch(API_URL)
       .then(r => { if (!r.ok) throw new Error(); return r.json() })
-      .then(json => { setBulkData(json); setBulkLoading(false); setBulkError(false) })
-      .catch(() => { setBulkLoading(false); setBulkError(true) })
-  }, [])
+      .then(json => { setBulkData(json); setBulkLoading(false); setUploadedName(null) })
+      .catch(() =>
+        fetch('/bulk_2year_data.json')
+          .then(r => { if (!r.ok) throw new Error(); return r.json() })
+          .then(json => { setBulkData(json); setBulkLoading(false); setUploadedName(null) })
+          .catch(() => { setBulkLoading(false); setBulkError(true) })
+      )
+  }
+
+  useEffect(() => { loadData() }, [])
 
   // Upload handler — user can load a new JSON file to replace bulk data
   const handleUpload = (e) => {
@@ -1365,7 +1374,7 @@ function SimulatorPage() {
     return (
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-8 py-10 text-center">
         <div className="inline-block w-8 h-8 border-4 border-violet-200 border-t-violet-600 rounded-full animate-spin mb-3" />
-        <p className="text-gray-500 text-sm font-medium">Loading bulk data...</p>
+        <p className="text-gray-500 text-sm font-medium">Fetching latest data...</p>
       </div>
     )
   }
@@ -1385,19 +1394,26 @@ function SimulatorPage() {
 
   return (
     <div className="space-y-4">
-      {/* Data source info + upload */}
+      {/* Data source info + refresh + upload */}
       <div className="bg-violet-50 border border-violet-200 rounded-xl px-4 py-2 flex items-center gap-3 flex-wrap">
         <span className="text-violet-600 text-xs font-bold px-2 py-0.5 rounded-full bg-violet-100 border border-violet-200">
-          {uploadedName ? 'UPLOADED' : 'BULK 2Y'}
+          {uploadedName ? 'UPLOADED' : 'LIVE'}
         </span>
         <span className="text-xs text-violet-700">
           {bulkData.results.length.toLocaleString()} signals · {allLevelChains.length.toLocaleString()} sessions
           {uploadedName ? ` · ${uploadedName}` : ''}
         </span>
-        <label className="ml-auto inline-flex items-center gap-1.5 cursor-pointer bg-violet-600 text-white text-xs font-semibold px-3 py-1 rounded-lg hover:bg-violet-700 transition-colors">
-          Upload new data
-          <input type="file" accept=".json" className="hidden" onChange={handleUpload} />
-        </label>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={loadData}
+            className="inline-flex items-center gap-1.5 bg-white border border-violet-300 text-violet-700 text-xs font-semibold px-3 py-1 rounded-lg hover:bg-violet-100 transition-colors">
+            ↻ Refresh
+          </button>
+          <label className="inline-flex items-center gap-1.5 cursor-pointer bg-violet-600 text-white text-xs font-semibold px-3 py-1 rounded-lg hover:bg-violet-700 transition-colors">
+            Upload JSON
+            <input type="file" accept=".json" className="hidden" onChange={handleUpload} />
+          </label>
+        </div>
       </div>
 
       {/* Custom Bet Amounts Per Level */}
