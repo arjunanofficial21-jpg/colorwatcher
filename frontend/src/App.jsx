@@ -1158,6 +1158,7 @@ function SimulatorPage() {
   const [initialCapital, setInitialCapital] = useState('')
   const [skipTriggers, setSkipTriggers] = useState(new Set())
   const [skipCount, setSkipCount]       = useState(2)
+  const [only729, setOnly729]           = useState(false)
   const PAGE_SIZE = 100
 
   const toggleSimSkipTrigger = (t) => setSkipTriggers(prev => {
@@ -1254,6 +1255,7 @@ function SimulatorPage() {
     if (selectedYear !== 'all') rows = rows.filter(r => r.date.slice(0, 4) === selectedYear)
     if (selectedMonth !== 'all') rows = rows.filter(r => r.date.slice(0, 7) === selectedMonth)
     if (selectedType !== 'all') rows = rows.filter(r => r.type === selectedType)
+    if (only729) rows = rows.filter(r => r.maxAmt >= 72900)
     // apply skip logic
     if (skipTriggers.size > 0) {
       let skipRemaining = 0
@@ -1268,7 +1270,7 @@ function SimulatorPage() {
       rows = rows.map(row => ({ ...row, skipped: false }))
     }
     return rows
-  }, [processed, selectedYear, selectedMonth, selectedType, skipTriggers, skipCount])
+  }, [processed, selectedYear, selectedMonth, selectedType, only729, skipTriggers, skipCount])
 
   // Stats (skipped rows excluded from P&L)
   const stats = useMemo(() => {
@@ -1349,7 +1351,7 @@ function SimulatorPage() {
   const pagedRows = useMemo(() => displayRows.slice((safeP - 1) * PAGE_SIZE, safeP * PAGE_SIZE), [displayRows, safeP])
 
   // Reset page when filters change
-  useEffect(() => { setPage(1) }, [selectedYear, selectedMonth, selectedType])
+  useEffect(() => { setPage(1) }, [selectedYear, selectedMonth, selectedType, only729])
   // Reset month when year changes
   useEffect(() => { setSelectedMonth('all') }, [selectedYear])
 
@@ -1512,6 +1514,19 @@ function SimulatorPage() {
               </button>
             ))}
           </div>
+        </div>
+
+        {/* 729x+ filter */}
+        <div className="flex items-center gap-2 mt-3 pt-3 border-t border-gray-100">
+          <span className="text-xs text-gray-400 font-medium">Show only:</span>
+          <button
+            onClick={() => setOnly729(v => !v)}
+            className={`text-xs px-3 py-1 rounded-full border font-semibold transition-colors
+              ${only729
+                ? 'bg-rose-600 text-white border-rose-600'
+                : 'bg-white text-gray-600 border-gray-200 hover:border-rose-400'}`}>
+            729x+ only
+          </button>
         </div>
 
         {/* Skip sessions */}
