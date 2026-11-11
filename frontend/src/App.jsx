@@ -62,8 +62,11 @@ const BET_LEVELS = [
   { amount: 656100, label: '6561x' },
 ]
 
+// Level-based stakes for non-3x territory (L10, L11, L12) + catch-all
+const EXTRA_LEVELS = [10, 11, 12]
+
 const DEFAULT_STAKES = {}
-const DEFAULT_MONTH_INVEST = 50000
+const DEFAULT_MONTH_INVEST = 40000
 
 // ─── all game levels (for simulator) ─────────────────────────────────────────
 const ALL_GAME_LEVELS = [100, 300, 900, 2700, 8100, 24300, 72900, 218700, 656100, 1968300, 5904900, 17714700]
@@ -73,49 +76,86 @@ const ALL_GAME_LEVELS = [100, 300, 900, 2700, 8100, 24300, 72900, 218700, 656100
 // Each entry before the last = LOSS. Last entry = WIN.
 // For amounts not in BET_LEVELS (non-3x above 72900), uses 'above729x' catch-all stake.
 
-function stakeForAmount(amt, stakes) {
-  if (amt < 900) return 0
-  const lvl = BET_LEVELS.find(l => l.amount === amt)
-  return lvl ? (stakes[lvl.label] || 0) : (stakes['above729x'] || 0)
+function stakeForEntry(entry, stakes) {
+  const { amount, level } = entry
+  if (amount < 900) return 0
+  const lvl = BET_LEVELS.find(l => l.amount === amount)
+  if (lvl) return stakes[lvl.label] || 0
+  // Level-based: L10, L11, L12 each have their own stake key
+  if (level && level <= 12) return stakes[`L${level}`] || 0
+  // Catch-all for L13+
+  return stakes['above729x'] || 0
 }
 
 function chainPnL(chain, stakes = DEFAULT_STAKES) {
   const maxAmt = Math.max(...chain.map(e => e.amount))
   if (maxAmt < 900) return null  // no bet placed
 
-  // sum all losses (every entry except last, if amount >= 900)
+  // Each level is charged only once — dedup by level (handles Telegram duplicate messages
+  // and chain bounces where the same amount appears more than once).
   let totalLost = 0
+  const chargedLevels = new Set()
   for (let i = 0; i < chain.length - 1; i++) {
-    if (chain[i].amount >= 900) totalLost += stakeForAmount(chain[i].amount, stakes)
+    const entry = chain[i]
+    if (entry.amount < 900) continue
+    const key = entry.level ?? entry.amount  // level from API; fallback to amount
+    if (chargedLevels.has(key)) continue
+    chargedLevels.add(key)
+    totalLost += stakeForEntry(entry, stakes)
   }
 
   // last entry is the WIN
-  const winAmt = chain[chain.length - 1].amount
-  if (winAmt < 900) return null
-  const winStake = stakeForAmount(winAmt, stakes)
+  const lastEntry = chain[chain.length - 1]
+  if (lastEntry.amount < 900) return null
+  const winStake = stakeForEntry(lastEntry, stakes)
 
   return winStake - totalLost
 }
 
+// Returns the 3x chain level for an amount (100=L1, 300=L2, 900=L3, 2700=L4 ...)
+// Returns null if the amount is not on the 3x chain
+function levelForAmount(amount) {
+  let n = amount / 100
+  if (n < 1 || !Number.isInteger(n)) return null
+  let level = 1
+  while (n > 1) {
+    if (n % 3 !== 0) return null
+    n /= 3
+    level++
+  }
+  return level
+}
+
+// Returns true if n is a power of 3 (e.g. 3,9,27,81,...)
+function isPowerOf3(n) {
+  if (n < 1 || !Number.isInteger(n)) return false
+  while (n % 3 === 0) n /= 3
+  return n === 1
+}
+
 function outcomeLabel(chain) {
   const winAmt = chain[chain.length - 1].amount
+  // Check known BET_LEVELS first
+  const knownLvl = BET_LEVELS.find(l => l.amount === winAmt)
+  if (knownLvl) return knownLvl.label
   const maxAmt = Math.max(...chain.map(e => e.amount))
   if (maxAmt > 72900) {
-    // exact match to a known above-72900 level → use that label
-    const knownLvl = BET_LEVELS.find(l => l.amount === winAmt && l.amount > 72900)
-    return knownLvl ? knownLvl.label : 'no limit'
-  }
-  for (const lvl of BET_LEVELS) {
-    if (winAmt === lvl.amount) return lvl.label
+    // Check if it's a valid 3x multiplier: amount = 100 × 3^n
+    const multiplier = winAmt / 100
+    if (isPowerOf3(multiplier)) return `${multiplier}x`
+    // Not a 3x amount — show formatted rupee value
+    return '₹' + (winAmt >= 10000000
+      ? (winAmt / 10000000).toFixed(winAmt % 10000000 === 0 ? 0 : 1) + 'Cr'
+      : winAmt >= 100000
+      ? (winAmt / 100000).toFixed(winAmt % 100000 === 0 ? 0 : 1) + 'L'
+      : (winAmt / 1000).toFixed(winAmt % 1000 === 0 ? 0 : 1) + 'K')
   }
   return '—'
 }
 
-function rowHitsAnyTrigger(outcome, triggers) {
+function rowHitsAnyTrigger(outcome, maxAmt, level, triggers, skipLevel) {
   if (triggers.size === 0) return false
-  if (triggers.has('243x')     && outcome === '243x')     return true
-  if (triggers.has('729x')     && outcome === '729x')     return true
-  if (triggers.has('no_limit') && outcome === 'no limit') return true
+  if (triggers.has('level') && level != null && level >= skipLevel) return true
   return false
 }
 
@@ -356,6 +396,7 @@ function BetTablePage({ allChains }) {
   const [timeTo, setTimeTo]               = useState({ h: '', ampm: 'PM' })
   const [skipTriggers, setSkipTriggers]   = useState(new Set())  // empty = off
   const [skipCount, setSkipCount]         = useState(2)
+  const [skipLevel, setSkipLevel]         = useState(8)  // min level for 'level' trigger
 
   const toggleSkipTrigger = (t) => setSkipTriggers(prev => {
     const next = new Set(prev)
@@ -402,7 +443,8 @@ function BetTablePage({ allChains }) {
         const rowMonth = chain[0].date.slice(0, 7)
         const label    = outcomeLabel(chain)
         const pnl      = chainPnL(chain, stakes)
-        return { date: chain[0].date, time: chain[0].time, type, outcome: label, maxAmt, pnl, month: rowMonth }
+        const level    = chain[chain.length - 1].level ?? chain.length
+        return { date: chain[0].date, time: chain[0].time, type, outcome: label, maxAmt, pnl, level, month: rowMonth }
       })
 
     // Pass 2: mark skipped rows
@@ -412,7 +454,7 @@ function BetTablePage({ allChains }) {
         skipRemaining--
         return { ...row, skipped: true }
       }
-      if (rowHitsAnyTrigger(row.outcome, skipTriggers)) {
+      if (rowHitsAnyTrigger(row.outcome, row.maxAmt, row.level, skipTriggers, skipLevel)) {
         skipRemaining = skipCount
       }
       return { ...row, skipped: false }
@@ -429,7 +471,7 @@ function BetTablePage({ allChains }) {
       if (!row.skipped) balance += (row.pnl ?? 0)
       return { ...row, balance }
     })
-  }, [allChains, stakes, timeFrom, timeTo, skipTriggers, skipCount, monthlyInvest])
+  }, [allChains, stakes, timeFrom, timeTo, skipTriggers, skipCount, skipLevel, monthlyInvest])
 
   const count729 = useMemo(() => allRows.filter(r => r.maxAmt >= 72900).length, [allRows])
 
@@ -556,9 +598,26 @@ function BetTablePage({ allChains }) {
                 </div>
               </div>
             ))}
-            {/* catch-all for non-3x amounts above 72900 */}
+            {/* L10, L11, L12 level-based stakes */}
+            {EXTRA_LEVELS.map(lvl => (
+              <div key={`L${lvl}`} className="flex items-center gap-1.5">
+                <span className="text-xs font-semibold text-orange-600 w-12">L{lvl}</span>
+                <div className="flex items-center border border-orange-200 rounded-lg overflow-hidden">
+                  <span className="text-xs text-orange-400 px-2 bg-orange-50 border-r border-orange-200">₹</span>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    value={stakes[`L${lvl}`] ?? ''}
+                    onChange={e => updateStake(`L${lvl}`, e.target.value)}
+                    className="text-xs font-bold text-orange-800 w-16 px-2 py-1 outline-none"
+                  />
+                </div>
+              </div>
+            ))}
+            {/* catch-all for L13+ */}
             <div className="flex items-center gap-1.5">
-              <span className="text-xs font-semibold text-purple-600 w-20">other+</span>
+              <span className="text-xs font-semibold text-purple-600 w-20">L13+</span>
               <div className="flex items-center border border-purple-200 rounded-lg overflow-hidden">
                 <span className="text-xs text-purple-400 px-2 bg-purple-50 border-r border-purple-200">₹</span>
                 <input
@@ -572,7 +631,7 @@ function BetTablePage({ allChains }) {
               </div>
             </div>
           </div>
-          <p className="text-[11px] text-gray-400 mt-1.5">2187x / 6561x = exact 3x levels · <span className="text-purple-400">other+</span> = any non-3x amount above 729x (100K, 500K, 1M etc.)</p>
+          <p className="text-[11px] text-gray-400 mt-1.5">2187x / 6561x = exact 3x levels · <span className="text-orange-400">L10–L12</span> = level-based above 6561x · <span className="text-purple-400">L13+</span> = catch-all beyond L12</p>
         </div>
 
         <div className="w-full border-t border-gray-100 pt-3 flex items-center gap-2 flex-wrap">
@@ -633,20 +692,32 @@ function BetTablePage({ allChains }) {
 
         <div className="w-full border-t border-gray-100 pt-3 flex items-center gap-3 flex-wrap">
           <span className="text-xs text-gray-400 font-medium">Skip sessions after:</span>
-          {[
-            { value: '243x',     label: '243x' },
-            { value: '729x',     label: '729x' },
-            { value: 'no_limit', label: 'No Limit' },
-          ].map(opt => (
-            <button key={opt.value}
-              onClick={() => toggleSkipTrigger(opt.value)}
+          {/* Level-based trigger */}
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => toggleSkipTrigger('level')}
               className={`text-xs px-3 py-1 rounded-full border font-semibold transition-colors
-                ${skipTriggers.has(opt.value)
+                ${skipTriggers.has('level')
                   ? 'bg-amber-500 text-white border-amber-500'
                   : 'bg-white text-gray-600 border-gray-200 hover:border-amber-400'}`}>
-              {opt.label}
+              Level
             </button>
-          ))}
+            {skipTriggers.has('level') && (
+              <div className="flex items-center gap-1 flex-wrap">
+                {[3,4,5,6,7,8,9,10,11,12].map(lvl => (
+                  <button key={lvl}
+                    onClick={() => setSkipLevel(lvl)}
+                    className={`text-[11px] w-7 h-6 rounded border font-bold transition-colors
+                      ${skipLevel === lvl
+                        ? 'bg-amber-500 text-white border-amber-500'
+                        : 'bg-white text-gray-500 border-gray-200 hover:border-amber-400'}`}>
+                    {lvl}
+                  </button>
+                ))}
+                <span className="text-[10px] text-gray-400 ml-1">L{skipLevel}+</span>
+              </div>
+            )}
+          </div>
           {skipTriggers.size > 0 && (
             <>
               <div className="flex items-center gap-2 ml-1">
@@ -777,9 +848,15 @@ function BetTablePage({ allChains }) {
                 <th className="px-4 py-3 text-left font-semibold text-xs">Time</th>
                 <th className="px-4 py-3 text-left font-semibold text-xs">Game</th>
                 <th className="px-4 py-3 text-left font-semibold text-xs">Outcome</th>
+                <th className="px-4 py-3 text-left font-semibold text-xs">Level</th>
                 {BET_LEVELS.map(lvl => (
                   <th key={lvl.label} className="px-4 py-3 text-right font-semibold text-xs">
                     {lvl.label} Stake
+                  </th>
+                ))}
+                {EXTRA_LEVELS.map(lvl => (
+                  <th key={`L${lvl}`} className="px-4 py-3 text-right font-semibold text-xs text-orange-300">
+                    L{lvl} Stake
                   </th>
                 ))}
                 <th className="px-4 py-3 text-right font-semibold text-xs">Net P&L</th>
@@ -804,8 +881,14 @@ function BetTablePage({ allChains }) {
                     <td className="px-4 py-2.5 text-xs font-semibold text-gray-400">
                       {row.outcome}
                     </td>
+                    <td className="px-4 py-2.5 text-xs text-gray-300">
+                      L{row.level}
+                    </td>
                     {BET_LEVELS.map(lvl => (
                       <td key={lvl.label} className="px-4 py-2.5 text-xs text-right text-gray-300">—</td>
+                    ))}
+                    {EXTRA_LEVELS.map(lvl => (
+                      <td key={`L${lvl}`} className="px-4 py-2.5 text-xs text-right text-gray-300">—</td>
                     ))}
                     <td className="px-4 py-2.5 text-xs text-right">
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-gray-200 text-gray-500 uppercase tracking-wide">SKIP</span>
@@ -836,9 +919,17 @@ function BetTablePage({ allChains }) {
                       ${highlight ? 'text-rose-700' : 'text-gray-700'}`}>
                       {row.outcome}
                     </td>
+                    <td className="px-4 py-2.5 text-xs text-gray-500">
+                      <span className="font-bold text-indigo-500">L{row.level}</span>
+                    </td>
                     {BET_LEVELS.map(lvl => (
                       <td key={lvl.label} className="px-4 py-2.5 text-xs text-right text-gray-400">
-                        {row.maxAmt < lvl.amount ? '₹0' : `₹${stakes[lvl.label]}`}
+                        {row.maxAmt < lvl.amount ? '₹0' : `₹${stakes[lvl.label] ?? 0}`}
+                      </td>
+                    ))}
+                    {EXTRA_LEVELS.map(lvl => (
+                      <td key={`L${lvl}`} className="px-4 py-2.5 text-xs text-right text-gray-400">
+                        {row.level < lvl ? '₹0' : `₹${stakes[`L${lvl}`] ?? 0}`}
                       </td>
                     ))}
                     <td className={`px-4 py-2.5 text-xs text-right font-bold

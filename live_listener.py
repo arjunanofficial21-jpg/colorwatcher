@@ -103,6 +103,111 @@ def extract_target_content(text):
 
 
 # ============================================================
+# CHAIN-LEVEL ASSIGNMENT
+# ============================================================
+
+def is_valid_amount(n):
+    """Mirror of frontend isValidAmount — only 3x-chain values or ≥72900."""
+    if n is None or n < 100:
+        return False
+    if n >= 72900:
+        return True
+    v = n
+    while v > 100:
+        if v % 3 != 0:
+            return False
+        v = v // 3
+    return v == 100
+
+
+def minutes_diff(d1, t1, d2, t2):
+    fmt = "%Y-%m-%d %H:%M:%S"
+    dt1 = datetime.strptime(f"{d1} {t1}", fmt)
+    dt2 = datetime.strptime(f"{d2} {t2}", fmt)
+    return (dt2 - dt1).total_seconds() / 60
+
+
+def level_for_amount(n):
+    """
+    Returns the natural 3x-chain level for a given amount:
+      100=L1, 300=L2, 900=L3, 2700=L4, 8100=L5, 24300=L6,
+      72900=L7, 218700=L8, 656100=L9, 1968300=L10, ...
+    Returns None if the amount is not on the 3x chain.
+    """
+    if n is None or n < 100:
+        return None
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return None
+    v, level = n, 1
+    while v > 100:
+        if v % 3 != 0:
+            return None
+        v //= 3
+        level += 1
+    return level if v == 100 else None
+
+
+def close_chain(chain):
+    """
+    Assign levels to every entry in a completed chain.
+    - 3x amounts get their natural level (100=L1, 300=L2, 900=L3 ...).
+    - Non-3x amounts above the last known 3x entry count up from there.
+    This means chain bounces (e.g. 900→300→900) don't inflate the level.
+    """
+    # Find the highest natural 3x level reached and where it sits
+    max_3x_level = 0
+    max_3x_idx   = -1
+    for i, e in enumerate(chain):
+        lvl = level_for_amount(e.get("amount"))
+        if lvl is not None and lvl > max_3x_level:
+            max_3x_level = lvl
+            max_3x_idx   = i
+
+    for i, e in enumerate(chain):
+        lvl = level_for_amount(e.get("amount"))
+        if lvl is not None:
+            e["level"] = lvl
+        elif max_3x_idx >= 0:
+            # count steps above the last known 3x entry
+            e["level"] = max_3x_level + (i - max_3x_idx)
+        else:
+            e["level"] = i + 1  # fallback: no 3x entries at all
+
+
+def assign_levels(results):
+    """
+    Walk results sorted by date+time, build chains (same logic as frontend
+    buildChains), and stamp each entry with the correct level via close_chain.
+    """
+    sorted_r = sorted(results, key=lambda x: (x.get("date", ""), x.get("time", "")))
+
+    cur = []
+    for entry in sorted_r:
+        if not is_valid_amount(entry.get("amount")):
+            entry["level"] = None
+            continue
+
+        prev = cur[-1] if cur else None
+        gap_break = (
+            prev is not None
+            and minutes_diff(prev["date"], prev["time"], entry["date"], entry["time"]) > 10
+        )
+
+        if (entry["amount"] == 100 or gap_break) and cur:
+            close_chain(cur)
+            cur = []
+
+        cur.append(entry)
+
+    if cur:
+        close_chain(cur)
+
+    return sorted_r
+
+
+# ============================================================
 # LOAD / SAVE JSON
 # ============================================================
 
@@ -129,6 +234,8 @@ def load_existing_data():
     seen = {f"{r['date']}|{r['time']}|{r['type']}|{r['amount']}" for r in bulk_results}
     new_live = [r for r in live_results if f"{r['date']}|{r['time']}|{r['type']}|{r['amount']}" not in seen]
     merged = bulk_results + new_live
+
+    assign_levels(merged)
 
     with _lock:
         _state["results"]      = merged
@@ -387,6 +494,7 @@ async def main():
 
         with _lock:
             _state["results"].append(result)
+            assign_levels(_state["results"])
             _state["messages_scanned"] += 1
             _state["matches"]          = len(_state["results"])
             _state["last_updated"]     = ist_dt.isoformat()
